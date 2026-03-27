@@ -82,6 +82,24 @@ scripts\dev-up.cmd
 - Web UI: http://localhost:3000
 - Manager API health: http://localhost:3001/health
 
+## Авторизация В Панели
+
+Можно включить вход в `manager-web` через переменные окружения.
+
+Пример для `docker-compose.yml`:
+
+```yaml
+environment:
+  NEXT_PUBLIC_API_URL: http://localhost:3001
+  PANEL_AUTH_USERNAME: admin
+  PANEL_AUTH_PASSWORD: change-me
+  PANEL_AUTH_SECRET: some-long-random-string
+```
+
+- Если `PANEL_AUTH_USERNAME` и `PANEL_AUTH_PASSWORD` пустые, вход отключён.
+- `PANEL_AUTH_SECRET` рекомендуется задавать явно, чтобы cookie сессии не зависела от пароля напрямую.
+- После успешного входа панель выдаёт `httpOnly` cookie и открывает основной интерфейс.
+
 ## Перезапуск и восстановление
 
 Поведение после перезапуска теперь такое:
