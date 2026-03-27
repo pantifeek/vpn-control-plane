@@ -1,0 +1,16 @@
+{
+  "name": "vpn-control-plane",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "install:all": "npm install --workspaces",
+    "dev:api": "npm --workspace apps/manager-api run dev",
+    "dev:web": "npm --workspace apps/manager-web run dev",
+    "dev:openvpn": "npm --workspace apps/worker-openvpn run dev",
+    "dev:ipsec": "npm --workspace apps/worker-ipsec run dev"
+  }
+}

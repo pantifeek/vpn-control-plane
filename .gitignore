@@ -1,0 +1,36 @@
+node_modules
+npm-debug.log
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.next
+dist
+coverage
+
+# Local data / runtime artifacts
+data/
+profiles.json
+*.log
+*.pid
+*.tmp
+
+# VPN secrets and client bundles
+*.ovpn
+*.conf
+*.crt
+*.csr
+*.key
+*.pem
+*.p12
+*.pfx
+*.mobileconfig
+*.wg
+*.psk
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
