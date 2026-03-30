@@ -14,6 +14,8 @@ const PROFILE_PORT = process.env.VPN_PROFILE_PORT || '';
 const PROFILE_USERNAME = process.env.VPN_PROFILE_USERNAME || '';
 const WATCHDOG_INTERVAL_MS = Number(process.env.RUNTIME_WATCHDOG_INTERVAL_MS || 15000);
 const STALE_HANDSHAKE_SECONDS = Number(process.env.RUNTIME_STALE_HANDSHAKE_SECONDS || 180);
+const OPENVPN_INTERFACE_TIMEOUT_MS = Number(process.env.RUNTIME_OPENVPN_INTERFACE_TIMEOUT_MS || 90000);
+const OPENVPN_STARTUP_LOG_TAIL = Number(process.env.RUNTIME_OPENVPN_STARTUP_LOG_TAIL || 30);
 
 const app = express();
 app.use(express.json());
@@ -41,7 +43,8 @@ const state = {
   openvpn: {
     initializedAt: null,
     lastWriteErrorAt: null,
-    writeErrorCount: 0
+    writeErrorCount: 0,
+    recentLogs: []
   }
 };
 
@@ -688,6 +691,57 @@ function stopOpenvpnProcess() {
   state.openvpn.initializedAt = null;
   state.openvpn.lastWriteErrorAt = null;
   state.openvpn.writeErrorCount = 0;
+  state.openvpn.recentLogs = [];
+}
+
+function pushOpenvpnRecentLog(line) {
+  state.openvpn.recentLogs.push(line);
+  if (state.openvpn.recentLogs.length > OPENVPN_STARTUP_LOG_TAIL) {
+    state.openvpn.recentLogs.shift();
+  }
+}
+
+function detectOpenvpnFailureHint() {
+  const lines = state.openvpn.recentLogs;
+  if (lines.length === 0) {
+    return null;
+  }
+
+  const checks = [
+    { regex: /AUTH_FAILED|auth failed/i, hint: 'authentication failed (check username/password/certificates)' },
+    { regex: /TLS Error|TLS handshake failed|TLS key negotiation failed/i, hint: 'TLS handshake failed (server unreachable, blocked UDP/TCP, or tls-auth/key-direction mismatch)' },
+    { regex: /cipher|data-ciphers|cipher negotiation/i, hint: 'cipher negotiation issue (set compatible data-ciphers/data-ciphers-fallback)' },
+    { regex: /RESOLVE: Cannot resolve host address/i, hint: 'cannot resolve VPN hostname (DNS issue)' },
+    { regex: /Connection reset|Connection refused|Network is unreachable|No route to host|Operation timed out/i, hint: 'network connectivity to VPN endpoint is failing' },
+    { regex: /VERIFY ERROR|certificate verify failed/i, hint: 'certificate verification failed (CA/cert mismatch or invalid cert chain)' },
+    { regex: /Options error/i, hint: 'invalid OpenVPN config option in the profile' }
+  ];
+
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    const match = checks.find((entry) => entry.regex.test(line));
+    if (match) {
+      return { hint: match.hint, evidence: line };
+    }
+  }
+
+  return null;
+}
+
+function buildOpenvpnStartupDiagnostics() {
+  const hint = detectOpenvpnFailureHint();
+  const recent = state.openvpn.recentLogs.slice(-8);
+  const parts = [];
+
+  if (hint) {
+    parts.push(`Likely cause: ${hint.hint}.`);
+    parts.push(`OpenVPN evidence: ${hint.evidence}`);
+  }
+  if (recent.length > 0) {
+    parts.push(`Recent OpenVPN logs: ${recent.join(' || ')}`);
+  }
+
+  return parts.join(' ');
 }
 
 function stopIpsecProcesses() {
@@ -710,6 +764,7 @@ function handleOpenvpnOutput(chunk) {
   }
 
   log(`openvpn stdout: ${text}`);
+  pushOpenvpnRecentLog(text);
 
   if (/Initialization Sequence Completed/i.test(text)) {
     state.openvpn.initializedAt = new Date().toISOString();
@@ -733,7 +788,14 @@ function waitForInterface(interfaceName, timeoutMs = 30000) {
     const timer = setInterval(() => {
       if (openvpnProcess && openvpnProcess.exitCode !== null) {
         clearInterval(timer);
-        reject(new Error(`OpenVPN exited before interface ${interfaceName} appeared (exit code ${openvpnProcess.exitCode})`));
+        const diagnostics = buildOpenvpnStartupDiagnostics();
+        reject(
+          new Error(
+            `OpenVPN exited before interface ${interfaceName} appeared (exit code ${openvpnProcess.exitCode}). ${
+              diagnostics || 'No diagnostic logs captured before exit.'
+            }`
+          )
+        );
         return;
       }
 
@@ -744,7 +806,14 @@ function waitForInterface(interfaceName, timeoutMs = 30000) {
       } catch (error) {
         if (Date.now() - start > timeoutMs) {
           clearInterval(timer);
-          reject(new Error(`VPN interface ${interfaceName} did not appear: ${error.message}`));
+          const diagnostics = buildOpenvpnStartupDiagnostics();
+          reject(
+            new Error(
+              `VPN interface ${interfaceName} did not appear within ${timeoutMs}ms: ${error.message}. ${
+                diagnostics || 'OpenVPN did not emit a recognizable failure message.'
+              }`
+            )
+          );
         }
       }
     }, 1000);
@@ -761,7 +830,14 @@ async function configureOpenvpn() {
 
   openvpnProcess = spawn('openvpn', args, { stdio: ['ignore', 'pipe', 'pipe'] });
   openvpnProcess.stdout.on('data', handleOpenvpnOutput);
-  openvpnProcess.stderr.on('data', (chunk) => log(`openvpn stderr: ${String(chunk).trim()}`));
+  openvpnProcess.stderr.on('data', (chunk) => {
+    const text = String(chunk).trim();
+    if (!text) {
+      return;
+    }
+    pushOpenvpnRecentLog(text);
+    log(`openvpn stderr: ${text}`);
+  });
   openvpnProcess.on('exit', (code, signal) => {
     log(`openvpn exited with code=${code} signal=${signal}`);
     if (state.status !== 'STOPPED' && !recoverInProgress) {
@@ -770,7 +846,7 @@ async function configureOpenvpn() {
     }
   });
 
-  await waitForInterface(files.expectedInterface, 30000);
+  await waitForInterface(files.expectedInterface, OPENVPN_INTERFACE_TIMEOUT_MS);
   applyBuiltInIptablesForOpenvpn(files.expectedInterface);
   applyCustomFirewall();
   applyPortForwarding(files.expectedInterface);

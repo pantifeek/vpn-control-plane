@@ -1,6 +1,7 @@
 services:
   manager-api:
     image: vpn-manager-api:prod
+    pull_policy: never
     build:
       context: ../..
       dockerfile: apps/manager-api/Dockerfile
@@ -28,6 +29,7 @@ services:
 
   manager-web:
     image: vpn-manager-web:prod
+    pull_policy: never
     build:
       context: ../..
       dockerfile: apps/manager-web/Dockerfile.prod
@@ -50,6 +52,7 @@ services:
 
   vpn-runtime-openvpn:
     image: vpn-runtime-openvpn:prod
+    pull_policy: never
     build:
       context: ../..
       dockerfile: infra/docker/runtime/openvpn.Dockerfile
@@ -58,6 +61,7 @@ services:
 
   vpn-runtime-ipsec:
     image: vpn-runtime-ipsec:prod
+    pull_policy: never
     build:
       context: ../..
       dockerfile: infra/docker/runtime/ipsec.Dockerfile
@@ -66,6 +70,7 @@ services:
 
   vpn-runtime-wireguard:
     image: vpn-runtime-wireguard:prod
+    pull_policy: never
     build:
       context: ../..
       dockerfile: infra/docker/runtime/wireguard.Dockerfile
