@@ -53,24 +53,24 @@ services:
     build:
       context: ../..
       dockerfile: infra/docker/runtime/openvpn.Dockerfile
-    profiles:
-      - runtime-images
+    entrypoint: ["/bin/sh", "-c", "exit 0"]
+    restart: "no"
 
   vpn-runtime-ipsec:
     image: vpn-runtime-ipsec:prod
     build:
       context: ../..
       dockerfile: infra/docker/runtime/ipsec.Dockerfile
-    profiles:
-      - runtime-images
+    entrypoint: ["/bin/sh", "-c", "exit 0"]
+    restart: "no"
 
   vpn-runtime-wireguard:
     image: vpn-runtime-wireguard:prod
     build:
       context: ../..
       dockerfile: infra/docker/runtime/wireguard.Dockerfile
-    profiles:
-      - runtime-images
+    entrypoint: ["/bin/sh", "-c", "exit 0"]
+    restart: "no"
 
 networks:
   manager-plane:
