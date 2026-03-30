@@ -30,6 +30,11 @@ services:
       context: ../..
       dockerfile: apps/manager-web/Dockerfile
     container_name: vpn-manager-web
+  environment:
+    NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api}
+    PANEL_AUTH_USERNAME: ${PANEL_AUTH_USERNAME:-}
+    PANEL_AUTH_PASSWORD: ${PANEL_AUTH_PASSWORD:-}
+    PANEL_AUTH_SECRET: ${PANEL_AUTH_SECRET:-}    
     ports:
       - "3000:3000"
     depends_on:
