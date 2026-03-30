@@ -2,6 +2,9 @@ import { cookies } from 'next/headers';
 import Dashboard from '../components/dashboard';
 import { AUTH_COOKIE_NAME, isPanelAuthEnabled, verifyAuthCookie } from '../lib/auth';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 function LoginScreen({ hasError }) {
   return (
     <main style={{ maxWidth: 420, margin: '10vh auto', padding: 24 }}>

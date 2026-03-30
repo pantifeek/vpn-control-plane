@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { AUTH_COOKIE_NAME, buildAuthToken, getPanelAuthUsername, isPanelAuthEnabled, verifyPanelCredentials } from '../../../lib/auth';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(request) {
   const formData = await request.formData();
   const username = String(formData.get('username') || '');
