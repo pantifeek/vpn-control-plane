@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { AUTH_COOKIE_NAME, buildAuthToken, getPanelAuthUsername, isPanelAuthEnabled, verifyPanelCredentials } from '../../../../lib/auth';
+import { AUTH_COOKIE_NAME, buildAuthToken, getPanelAuthUsername, isPanelAuthEnabled, verifyPanelCredentials } from '../../../lib/auth';
 
 export async function POST(request) {
   const formData = await request.formData();

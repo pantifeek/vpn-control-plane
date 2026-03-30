@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { AUTH_COOKIE_NAME } from '../../../../lib/auth';
+import { AUTH_COOKIE_NAME } from '../../../lib/auth';
 
 export async function POST(request) {
   const redirectUrl = request.nextUrl.clone();

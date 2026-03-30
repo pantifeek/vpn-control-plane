@@ -13,7 +13,7 @@ function LoginScreen({ hasError }) {
             Неверный логин или пароль.
           </div>
         )}
-        <form action="/api/auth/login" method="post" style={{ display: 'grid', gap: 12 }}>
+        <form action="/auth/login" method="post" style={{ display: 'grid', gap: 12 }}>
           <input name="username" placeholder="Логин" autoComplete="username" style={{ padding: 12, borderRadius: 10, border: '1px solid #c8d0dc', fontSize: 16 }} />
           <input name="password" type="password" placeholder="Пароль" autoComplete="current-password" style={{ padding: 12, borderRadius: 10, border: '1px solid #c8d0dc', fontSize: 16 }} />
           <button type="submit" style={{ padding: 12, borderRadius: 10, border: '1px solid #111827', background: '#111827', color: '#fff', fontSize: 16 }}>
@@ -29,7 +29,7 @@ function AuthenticatedPage() {
   return (
     <>
       <div style={{ maxWidth: 1500, margin: '0 auto', padding: '18px 24px 0 24px', display: 'flex', justifyContent: 'flex-end' }}>
-        <form action="/api/auth/logout" method="post">
+        <form action="/auth/logout" method="post">
           <button type="submit" style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #c8d0dc', background: '#fff' }}>
             Выйти
           </button>
