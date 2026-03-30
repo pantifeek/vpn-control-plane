@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
 import { AUTH_COOKIE_NAME } from '../../../lib/auth';
 
-export async function POST(request) {
-  const redirectUrl = request.nextUrl.clone();
-  redirectUrl.pathname = '/';
-  redirectUrl.search = '';
-  const response = NextResponse.redirect(redirectUrl);
+export async function POST() {
+  const response = new NextResponse(null, {
+    status: 303,
+    headers: { Location: '/' }
+  });
   response.cookies.set({
     name: AUTH_COOKIE_NAME,
     value: '',

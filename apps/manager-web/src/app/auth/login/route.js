@@ -5,22 +5,25 @@ export async function POST(request) {
   const formData = await request.formData();
   const username = String(formData.get('username') || '');
   const password = String(formData.get('password') || '');
-  const successUrl = request.nextUrl.clone();
-  successUrl.pathname = '/';
-  successUrl.search = '';
-  const errorUrl = request.nextUrl.clone();
-  errorUrl.pathname = '/';
-  errorUrl.search = '?authError=1';
 
   if (!isPanelAuthEnabled()) {
-    return NextResponse.redirect(successUrl);
+    return new NextResponse(null, {
+      status: 303,
+      headers: { Location: '/' }
+    });
   }
 
   if (!verifyPanelCredentials(username, password)) {
-    return NextResponse.redirect(errorUrl);
+    return new NextResponse(null, {
+      status: 303,
+      headers: { Location: '/?authError=1' }
+    });
   }
 
-  const response = NextResponse.redirect(successUrl);
+  const response = new NextResponse(null, {
+    status: 303,
+    headers: { Location: '/' }
+  });
   response.cookies.set({
     name: AUTH_COOKIE_NAME,
     value: buildAuthToken(getPanelAuthUsername()),
