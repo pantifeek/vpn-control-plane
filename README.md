@@ -83,6 +83,22 @@ scripts\dev-up.cmd
 - Web UI: http://localhost:3000
 - Manager API health: http://localhost:3001/health
 
+## Production Compose
+
+Для production есть отдельный compose-файл:
+
+```bash
+docker compose -f infra/docker/docker-compose.prod.yml up -d --build
+```
+
+Особенности production-конфигурации:
+
+- `manager-web` запускается через `next build` + `next start`
+- `manager-web` и `manager-api` не публикуют порты наружу, только `expose`
+- предполагается, что внешний `nginx` подключён к сети `vpn-manager-plane`
+- фронт по умолчанию использует `NEXT_PUBLIC_API_URL=/api`
+- VPN runtime-контейнеры живут в отдельной `internal`-сети `vpn-runtime-plane`
+
 Сетевой дизайн по умолчанию:
 
 - `vpn-manager-plane` — сеть панели и сервисов управления

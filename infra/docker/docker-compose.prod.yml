@@ -1,0 +1,81 @@
+services:
+  manager-api:
+    image: vpn-manager-api:prod
+    build:
+      context: ../..
+      dockerfile: apps/manager-api/Dockerfile
+    container_name: vpn-manager-api
+    environment:
+      PORT: 3001
+      DOCKER_SOCKET_PATH: /var/run/docker.sock
+      PROFILE_STORE_PATH: /data/profiles.json
+      RUNTIME_NETWORK: ${RUNTIME_NETWORK:-vpn-runtime-plane}
+      RUNTIME_PORT: 8080
+      RUNTIME_IMAGE_OPENVPN: ${RUNTIME_IMAGE_OPENVPN:-vpn-runtime-openvpn:prod}
+      RUNTIME_IMAGE_IPSEC: ${RUNTIME_IMAGE_IPSEC:-vpn-runtime-ipsec:prod}
+      RUNTIME_IMAGE_WIREGUARD: ${RUNTIME_IMAGE_WIREGUARD:-vpn-runtime-wireguard:prod}
+      RUNTIME_STATUS_TIMEOUT_MS: ${RUNTIME_STATUS_TIMEOUT_MS:-5000}
+      RUNTIME_HEALTH_TIMEOUT_MS: ${RUNTIME_HEALTH_TIMEOUT_MS:-30000}
+    expose:
+      - "3001"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - manager-api-data:/data
+    networks:
+      - manager-plane
+      - runtime-plane
+    restart: unless-stopped
+
+  manager-web:
+    image: vpn-manager-web:prod
+    build:
+      context: ../..
+      dockerfile: apps/manager-web/Dockerfile.prod
+    container_name: vpn-manager-web
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api}
+      PANEL_AUTH_USERNAME: ${PANEL_AUTH_USERNAME:-}
+      PANEL_AUTH_PASSWORD: ${PANEL_AUTH_PASSWORD:-}
+      PANEL_AUTH_SECRET: ${PANEL_AUTH_SECRET:-}
+      NODE_ENV: production
+    expose:
+      - "3000"
+    depends_on:
+      - manager-api
+    networks:
+      - manager-plane
+    restart: unless-stopped
+
+  vpn-runtime-openvpn:
+    image: vpn-runtime-openvpn:prod
+    build:
+      context: ../..
+      dockerfile: infra/docker/runtime/openvpn.Dockerfile
+    profiles:
+      - runtime-images
+
+  vpn-runtime-ipsec:
+    image: vpn-runtime-ipsec:prod
+    build:
+      context: ../..
+      dockerfile: infra/docker/runtime/ipsec.Dockerfile
+    profiles:
+      - runtime-images
+
+  vpn-runtime-wireguard:
+    image: vpn-runtime-wireguard:prod
+    build:
+      context: ../..
+      dockerfile: infra/docker/runtime/wireguard.Dockerfile
+    profiles:
+      - runtime-images
+
+networks:
+  manager-plane:
+    name: vpn-manager-plane
+  runtime-plane:
+    name: vpn-runtime-plane
+    internal: true
+
+volumes:
+  manager-api-data:
