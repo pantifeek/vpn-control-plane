@@ -11,6 +11,7 @@ const DOCKER_SOCKET_PATH = process.env.DOCKER_SOCKET_PATH || '/var/run/docker.so
 const PROFILE_STORE_PATH = process.env.PROFILE_STORE_PATH || '/data/profiles.json';
 const RUNTIME_STATUS_TIMEOUT_MS = Number(process.env.RUNTIME_STATUS_TIMEOUT_MS || 5000);
 const RUNTIME_HEALTH_TIMEOUT_MS = Number(process.env.RUNTIME_HEALTH_TIMEOUT_MS || 30000);
+const RUNTIME_PORT_FORWARDING_MODE = String(process.env.RUNTIME_PORT_FORWARDING_MODE || 'HOST').trim().toUpperCase();
 
 const RUNTIME_IMAGES = {
   OPENVPN: process.env.RUNTIME_IMAGE_OPENVPN || 'vpn-runtime-openvpn:local',
@@ -483,11 +484,14 @@ function getPortBindings(profile) {
     [`${RUNTIME_PORT}/tcp`]: {}
   };
   const portBindings = {};
+  const publishToHost = RUNTIME_PORT_FORWARDING_MODE !== 'CONTAINER';
 
   for (const rule of portForwarding.rules.filter((item) => portForwarding.enabled && item.enabled)) {
     const key = `${rule.hostPort}/${rule.protocol}`;
     exposedPorts[key] = {};
-    portBindings[key] = [{ HostPort: String(rule.hostPort) }];
+    if (publishToHost) {
+      portBindings[key] = [{ HostPort: String(rule.hostPort) }];
+    }
   }
 
   return { exposedPorts, portBindings };

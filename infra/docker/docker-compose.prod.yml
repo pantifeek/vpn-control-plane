@@ -17,6 +17,7 @@ services:
       RUNTIME_IMAGE_WIREGUARD: ${RUNTIME_IMAGE_WIREGUARD:-vpn-runtime-wireguard:prod}
       RUNTIME_STATUS_TIMEOUT_MS: ${RUNTIME_STATUS_TIMEOUT_MS:-5000}
       RUNTIME_HEALTH_TIMEOUT_MS: ${RUNTIME_HEALTH_TIMEOUT_MS:-30000}
+      RUNTIME_PORT_FORWARDING_MODE: ${RUNTIME_PORT_FORWARDING_MODE:-CONTAINER}
     expose:
       - "3001"
     volumes:
@@ -82,7 +83,6 @@ networks:
     name: vpn-manager-plane
   runtime-plane:
     name: vpn-runtime-plane
-    internal: true
 
 volumes:
   manager-api-data:

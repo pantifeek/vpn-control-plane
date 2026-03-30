@@ -91,18 +91,39 @@ scripts\dev-up.cmd
 docker compose -f infra/docker/docker-compose.prod.yml up -d --build
 ```
 
+### Параметры Runtime Окружения (prod)
+
+Эти переменные читает `manager-api`; они влияют на создание runtime-контейнеров:
+
+- `RUNTIME_NETWORK` (по умолчанию: `vpn-runtime-plane`) — Docker-сеть, к которой подключаются VPN runtime-контейнеры.
+- `RUNTIME_PORT` (по умолчанию: `8080`) — внутренний порт runtime API.
+- `RUNTIME_IMAGE_OPENVPN` (по умолчанию: `vpn-runtime-openvpn:prod`) — тег образа OpenVPN runtime.
+- `RUNTIME_IMAGE_IPSEC` (по умолчанию: `vpn-runtime-ipsec:prod`) — тег образа IPsec runtime.
+- `RUNTIME_IMAGE_WIREGUARD` (по умолчанию: `vpn-runtime-wireguard:prod`) — тег образа WireGuard runtime.
+- `RUNTIME_STATUS_TIMEOUT_MS` (по умолчанию: `5000`) — таймаут запросов статуса runtime.
+- `RUNTIME_HEALTH_TIMEOUT_MS` (по умолчанию: `30000`) — таймаут health-check запросов runtime.
+- `RUNTIME_PORT_FORWARDING_MODE`:
+  - `HOST` (по умолчанию в коде) — публиковать `Port Forwarding` порты на Docker-хосте.
+  - `CONTAINER` (рекомендуется для изолированного доступа) — не публиковать порты на Docker-хосте; порты доступны только из контейнеров, которые могут обратиться к runtime-контейнеру по Docker-сети.
+
+Для `RUNTIME_PORT_FORWARDING_MODE=CONTAINER` подключайтесь из другого контейнера напрямую к:
+
+- `<runtime-container-name>:<hostPort>`
+
+где `<runtime-container-name>` — имя runtime-контейнера профиля (например `vpn-runtime-openvpn-<profile-id>`).
+
 Особенности production-конфигурации:
 
 - `manager-web` запускается через `next build` + `next start`
 - `manager-web` и `manager-api` не публикуют порты наружу, только `expose`
 - предполагается, что внешний `nginx` подключён к сети `vpn-manager-plane`
 - фронт по умолчанию использует `NEXT_PUBLIC_API_URL=/api`
-- VPN runtime-контейнеры живут в отдельной `internal`-сети `vpn-runtime-plane`
+- VPN runtime-контейнеры живут в отдельной сети `vpn-runtime-plane` (без `internal`, чтобы у runtime был egress к VPN endpoint)
 
 Сетевой дизайн по умолчанию:
 
 - `vpn-manager-plane` — сеть панели и сервисов управления
-- `vpn-runtime-plane` — отдельная `internal`-сеть для runtime-контейнеров VPN
+- `vpn-runtime-plane` — отдельная сеть для runtime-контейнеров VPN
 - `manager-api` подключён к обеим сетям, чтобы управлять runtime и читать их статус
 - `manager-web` подключён только к `vpn-manager-plane`
 
@@ -217,14 +238,14 @@ Runtime внутри контейнера:
 Каждое правило описывает:
 
 - `Protocol` — `tcp` или `udp`
-- `Host port` — какой порт открыть на хосте Docker
+- `Host port` — входной порт правила (`HOST`: публикуется на Docker host, `CONTAINER`: доступен только через сеть runtime-контейнера)
 - `Target IP` — адрес в VPN-сети клиента
 - `Target port` — порт на целевой машине в VPN
 - `Description` — произвольная пометка
 
 Под капотом это делает:
 
-- публикацию `Host port` на runtime-контейнере
+- публикацию `Host port` на runtime-контейнере (и на хосте только в режиме `RUNTIME_PORT_FORWARDING_MODE=HOST`)
 - маршрут до `Target IP` через VPN-интерфейс
 - `DNAT`
 - `FORWARD`
