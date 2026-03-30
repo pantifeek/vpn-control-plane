@@ -7,6 +7,7 @@
 - `manager-api` хранит профили на диске и через Docker API поднимает отдельный runtime-контейнер на каждое подключение
 - контейнер выбирается по типу VPN (`OPENVPN`, `IPSEC`, `WIREGUARD`)
 - каждый runtime-контейнер живёт в собственной network namespace, а значит имеет свои маршруты, процессы и `iptables`
+- сеть менеджера и сеть runtime-контейнеров разделены: `manager-web` не подключается к сети VPN runtime напрямую
 - для `WIREGUARD` реализован реальный bootstrap туннеля внутри контейнера через `wg`, `ip route` и `iptables`
 - для `OPENVPN` реализован запуск реального `openvpn` клиента внутри runtime-контейнера
 - для `IPSEC` реализован runtime для `L2TP/IPsec PSK` через `strongSwan + xl2tpd + pppd`
@@ -81,6 +82,13 @@ scripts\dev-up.cmd
 
 - Web UI: http://localhost:3000
 - Manager API health: http://localhost:3001/health
+
+Сетевой дизайн по умолчанию:
+
+- `vpn-manager-plane` — сеть панели и сервисов управления
+- `vpn-runtime-plane` — отдельная `internal`-сеть для runtime-контейнеров VPN
+- `manager-api` подключён к обеим сетям, чтобы управлять runtime и читать их статус
+- `manager-web` подключён только к `vpn-manager-plane`
 
 ## Авторизация В Панели
 

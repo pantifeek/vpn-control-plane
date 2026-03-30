@@ -9,7 +9,7 @@ services:
       PORT: 3001
       DOCKER_SOCKET_PATH: /var/run/docker.sock
       PROFILE_STORE_PATH: /data/profiles.json
-      RUNTIME_NETWORK: vpn-control-plane
+      RUNTIME_NETWORK: vpn-runtime-plane
       RUNTIME_PORT: 8080
       RUNTIME_IMAGE_OPENVPN: vpn-runtime-openvpn:local
       RUNTIME_IMAGE_IPSEC: vpn-runtime-ipsec:local
@@ -20,7 +20,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - manager-api-data:/data
     networks:
-      - control-plane
+      - manager-plane
+      - runtime-plane
     restart: unless-stopped
 
   manager-web:
@@ -34,7 +35,7 @@ services:
     depends_on:
       - manager-api
     networks:
-      - control-plane
+      - manager-plane
     restart: unless-stopped
 
   vpn-runtime-openvpn:
@@ -62,8 +63,11 @@ services:
       - runtime-images
 
 networks:
-  control-plane:
-    name: vpn-control-plane
+  manager-plane:
+    name: vpn-manager-plane
+  runtime-plane:
+    name: vpn-runtime-plane
+    internal: true
 
 volumes:
   manager-api-data:
