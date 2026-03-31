@@ -723,6 +723,9 @@ function getRuntimeEnv(profile) {
 
   env.push(`FIREWALL_CONFIG_JSON=${JSON.stringify(sanitizeFirewallConfig(profile.firewall))}`);
   env.push(`PORT_FORWARDING_CONFIG_JSON=${JSON.stringify(sanitizePortForwardingConfig(profile.portForwarding))}`);
+  if (process.env.RUNTIME_IPSEC_INTERFACE_MISSING_GRACE_MS) {
+    env.push(`RUNTIME_IPSEC_INTERFACE_MISSING_GRACE_MS=${process.env.RUNTIME_IPSEC_INTERFACE_MISSING_GRACE_MS}`);
+  }
 
   return env;
 }

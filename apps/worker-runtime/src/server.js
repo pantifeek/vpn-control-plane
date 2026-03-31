@@ -16,6 +16,7 @@ const WATCHDOG_INTERVAL_MS = Number(process.env.RUNTIME_WATCHDOG_INTERVAL_MS || 
 const STALE_HANDSHAKE_SECONDS = Number(process.env.RUNTIME_STALE_HANDSHAKE_SECONDS || 180);
 const OPENVPN_INTERFACE_TIMEOUT_MS = Number(process.env.RUNTIME_OPENVPN_INTERFACE_TIMEOUT_MS || 90000);
 const OPENVPN_STARTUP_LOG_TAIL = Number(process.env.RUNTIME_OPENVPN_STARTUP_LOG_TAIL || 30);
+const IPSEC_INTERFACE_MISSING_GRACE_MS = Number(process.env.RUNTIME_IPSEC_INTERFACE_MISSING_GRACE_MS || 300000);
 
 const app = express();
 app.use(express.json());
@@ -40,6 +41,9 @@ const state = {
   startupError: null,
   cleanupCommands: [],
   reconnectAttempts: 0,
+  ipsec: {
+    interfaceMissingSince: null
+  },
   openvpn: {
     initializedAt: null,
     lastWriteErrorAt: null,
@@ -1062,11 +1066,26 @@ async function monitorOpenvpn() {
 async function monitorIpsec() {
   const iface = detectVpnInterface();
   if (!iface || !iface.startsWith('ppp')) {
+    const now = Date.now();
+    if (!state.ipsec.interfaceMissingSince) {
+      state.ipsec.interfaceMissingSince = new Date(now).toISOString();
+    }
+
+    const missingForMs = now - new Date(state.ipsec.interfaceMissingSince).getTime();
+    if (missingForMs < IPSEC_INTERFACE_MISSING_GRACE_MS) {
+      state.status = 'DEGRADED';
+      state.lastMessage = `IPsec/L2TP PPP interface is missing, waiting ${Math.ceil((IPSEC_INTERFACE_MISSING_GRACE_MS - missingForMs) / 1000)}s before recovery`;
+      return;
+    }
+
     state.status = 'ERROR';
-    state.lastMessage = 'IPsec/L2TP PPP interface is missing';
+    state.lastMessage = `IPsec/L2TP PPP interface is missing for ${Math.floor(missingForMs / 1000)}s`;
+    state.ipsec.interfaceMissingSince = null;
     await recoverTunnel('ipsec ppp interface is missing');
     return;
   }
+
+  state.ipsec.interfaceMissingSince = null;
 
   try {
     run('ipsec', ['status', 'l2tp-psk']);

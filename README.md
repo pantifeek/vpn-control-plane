@@ -102,6 +102,7 @@ docker compose -f infra/docker/docker-compose.prod.yml up -d --build
 - `RUNTIME_IMAGE_WIREGUARD` (по умолчанию: `vpn-runtime-wireguard:prod`) — тег образа WireGuard runtime.
 - `RUNTIME_STATUS_TIMEOUT_MS` (по умолчанию: `5000`) — таймаут запросов статуса runtime.
 - `RUNTIME_HEALTH_TIMEOUT_MS` (по умолчанию: `30000`) — таймаут health-check запросов runtime.
+- `RUNTIME_IPSEC_INTERFACE_MISSING_GRACE_MS` (по умолчанию: `300000`) — grace-период (мс) для `IPSEC/L2TP`: сколько ждать при временном исчезновении `ppp` интерфейса перед запуском recovery (`ipsec stop/restart`). Помогает избежать лишних переподключений и обрывов клиентских сессий при кратковременных сбоях канала.
 - `RUNTIME_PORT_FORWARDING_MODE`:
   - `HOST` (по умолчанию в коде) — публиковать `Port Forwarding` порты на Docker-хосте.
   - `CONTAINER` (рекомендуется для изолированного доступа) — не публиковать порты на Docker-хосте; порты доступны только из контейнеров, которые могут обратиться к runtime-контейнеру по Docker-сети.
