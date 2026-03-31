@@ -640,7 +640,6 @@ function buildIpsecRuntimeFiles() {
     `name "${userId}"`,
     `password "${password.replace(/"/g, '\\"')}"`,
     `remotename "${lacName}"`,
-    'local',
     'nolock',
     'nocrtscts',
     'debug',
