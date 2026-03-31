@@ -695,6 +695,34 @@ function stopOpenvpnProcess() {
   state.openvpn.recentLogs = [];
 }
 
+function isIpv4Address(value) {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(String(value || '').trim());
+}
+
+function ensureIpsecRoutesForPortForwarding(vpnInterface) {
+  const config = parsePortForwardingConfig();
+  if (!config.enabled) {
+    return;
+  }
+
+  const uniqueTargets = new Set();
+  for (const rule of config.rules.filter((item) => item.enabled !== false)) {
+    const targetAddress = String(rule.targetAddress || '').trim();
+    if (!targetAddress) continue;
+    if (!isIpv4Address(targetAddress)) {
+      log(`Skipping static route for non-IPv4 targetAddress: ${targetAddress}`);
+      continue;
+    }
+    uniqueTargets.add(`${targetAddress}/32`);
+  }
+
+  for (const targetCidr of uniqueTargets) {
+    run('ip', ['route', 'replace', targetCidr, 'dev', vpnInterface]);
+    registerCleanup('ip', ['route', 'del', targetCidr, 'dev', vpnInterface]);
+    log(`Ensured IPsec route ${targetCidr} via ${vpnInterface}`);
+  }
+}
+
 function pushOpenvpnRecentLog(line) {
   state.openvpn.recentLogs.push(line);
   if (state.openvpn.recentLogs.length > OPENVPN_STARTUP_LOG_TAIL) {
@@ -965,6 +993,7 @@ async function configureIpsec() {
   run('sh', ['-lc', `printf 'c ${files.lacName}\n' > ${files.controlPath}`]);
   await waitForInterface('ppp0', 30000);
 
+  ensureIpsecRoutesForPortForwarding('ppp0');
   applyBuiltInIptablesForIpsec('ppp0');
   applyCustomFirewall();
   applyPortForwarding('ppp0');
