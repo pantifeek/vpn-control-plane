@@ -10,6 +10,10 @@ services:
       PORT: 3001
       DOCKER_SOCKET_PATH: /var/run/docker.sock
       PROFILE_STORE_PATH: /data/profiles.json
+      PANEL_AUTH_USERNAME: ${PANEL_AUTH_USERNAME:-}
+      PANEL_AUTH_PASSWORD: ${PANEL_AUTH_PASSWORD:-}
+      PANEL_AUTH_SECRET: ${PANEL_AUTH_SECRET:-}
+      MONITORING_TOKEN: ${MONITORING_TOKEN:-}
       RUNTIME_NETWORK: ${RUNTIME_NETWORK:-vpn-runtime-plane}
       RUNTIME_PORT: 8080
       RUNTIME_IMAGE_OPENVPN: ${RUNTIME_IMAGE_OPENVPN:-vpn-runtime-openvpn:prod}
