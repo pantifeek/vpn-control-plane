@@ -3,6 +3,7 @@ const cors = require('cors');
 const Docker = require('dockerode');
 const fs = require('fs/promises');
 const path = require('path');
+const crypto = require('crypto');
 
 const PORT = Number(process.env.PORT || 3001);
 const RUNTIME_NETWORK = process.env.RUNTIME_NETWORK || 'vpn-control-plane';
@@ -32,6 +33,254 @@ let persistenceReady = false;
 let startupState = 'BOOTING';
 let startupError = null;
 let persistQueue = Promise.resolve();
+
+function getPanelAuthSecret() {
+  return process.env.PANEL_AUTH_SECRET || `${process.env.PANEL_AUTH_USERNAME || ''}:${process.env.PANEL_AUTH_PASSWORD || ''}`;
+}
+
+function isPanelAuthEnabled() {
+  return Boolean(process.env.PANEL_AUTH_USERNAME && process.env.PANEL_AUTH_PASSWORD);
+}
+
+function getPanelAuthUsername() {
+  return process.env.PANEL_AUTH_USERNAME || '';
+}
+
+function buildPanelAuthToken(username) {
+  return crypto.createHmac('sha256', getPanelAuthSecret()).update(String(username || '')).digest('hex');
+}
+
+function parseCookieHeader(cookieHeader) {
+  const cookies = {};
+  for (const item of String(cookieHeader || '').split(';')) {
+    const [rawKey, ...rest] = item.split('=');
+    const key = String(rawKey || '').trim();
+    if (!key) continue;
+    cookies[key] = decodeURIComponent(rest.join('=').trim());
+  }
+  return cookies;
+}
+
+function isApiRequestAuthenticated(req) {
+  if (!isPanelAuthEnabled()) return true;
+  const cookies = parseCookieHeader(req.headers.cookie || '');
+  const cookieValue = cookies.vpn_panel_auth || '';
+  return cookieValue === buildPanelAuthToken(getPanelAuthUsername());
+}
+
+function isMonitoringTokenValid(req) {
+  const expectedToken = String(process.env.MONITORING_TOKEN || '').trim();
+  if (!expectedToken) {
+    return isApiRequestAuthenticated(req);
+  }
+
+  const header = String(req.headers.authorization || '');
+  const prefix = 'Bearer ';
+  if (!header.startsWith(prefix)) {
+    return false;
+  }
+
+  const candidateToken = header.slice(prefix.length).trim();
+  if (!candidateToken) {
+    return false;
+  }
+
+  const expectedBuffer = Buffer.from(expectedToken, 'utf8');
+  const candidateBuffer = Buffer.from(candidateToken, 'utf8');
+  return (
+    expectedBuffer.length === candidateBuffer.length &&
+    crypto.timingSafeEqual(expectedBuffer, candidateBuffer)
+  );
+}
+
+function asPrometheusLabel(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/\n/g, '\\n')
+    .replace(/"/g, '\\"');
+}
+
+function appendMetricLine(lines, name, value, labels = null) {
+  const suffix = labels && Object.keys(labels).length > 0
+    ? `{${Object.entries(labels)
+      .map(([key, labelValue]) => `${key}="${asPrometheusLabel(labelValue)}"`)
+      .join(',')}}`
+    : '';
+  lines.push(`${name}${suffix} ${Number.isFinite(value) ? value : 0}`);
+}
+
+function toUnixTimestampSeconds(value) {
+  if (!value) return 0;
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return 0;
+  return Math.floor(timestamp / 1000);
+}
+
+function toAgeSeconds(value) {
+  if (!value) return 0;
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return 0;
+  return Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+}
+
+function isContainerRunning(state) {
+  return String(state || '').toLowerCase() === 'running' ? 1 : 0;
+}
+
+function isWorkerConnected(status) {
+  return String(status || '').toUpperCase() === 'CONNECTED' ? 1 : 0;
+}
+
+function isWorkerProblem(status) {
+  return ['ERROR', 'DEGRADED', 'UNREACHABLE', 'STOPPED'].includes(String(status || '').toUpperCase()) ? 1 : 0;
+}
+
+function isStatusApplied(status) {
+  return String(status || '').toUpperCase() === 'APPLIED' ? 1 : 0;
+}
+
+async function collectInstanceStatuses() {
+  const result = [];
+
+  for (const profile of profiles.values()) {
+    const containerName = profile.runtimeContainerName || getRuntimeContainerName(profile);
+    const runtime = await fetchRuntimeStatus(containerName);
+
+    result.push({
+      profileId: profile.id,
+      name: profile.name,
+      type: profile.type,
+      host: profile.host,
+      port: profile.port,
+      managerStatus: profile.status,
+      runtimeContainerName: profile.runtimeContainerName,
+      runtimeImage: profile.runtimeImage || RUNTIME_IMAGES[profile.type],
+      runtimeContainerState: runtime.containerState,
+      workerStatus: runtime.runtimeStatus,
+      firewallStatus: runtime.firewallStatus || 'NOT_CONFIGURED',
+      firewallMessage: runtime.firewallMessage || null,
+      portForwardingStatus: runtime.portForwardingStatus || 'NOT_CONFIGURED',
+      portForwardingMessage: runtime.portForwardingMessage || null,
+      lastHandshakeAt: runtime.lastHandshakeAt || null,
+      workerConnectedAt: runtime.connectedAt,
+      workerLastMessage: runtime.lastMessage,
+      lastError: profile.lastError || null
+    });
+  }
+
+  return result;
+}
+
+async function buildMonitoringSnapshot() {
+  const instances = await collectInstanceStatuses();
+
+  const summary = {
+    totalProfiles: profiles.size,
+    desiredConnected: 0,
+    desiredStopped: 0,
+    desiredError: 0,
+    runningContainers: 0,
+    connectedWorkers: 0,
+    workerProblems: 0
+  };
+
+  for (const item of instances) {
+    if (item.managerStatus === 'CONNECTED') summary.desiredConnected += 1;
+    else if (item.managerStatus === 'ERROR') summary.desiredError += 1;
+    else summary.desiredStopped += 1;
+
+    summary.runningContainers += isContainerRunning(item.runtimeContainerState);
+    summary.connectedWorkers += isWorkerConnected(item.workerStatus);
+    summary.workerProblems += isWorkerProblem(item.workerStatus);
+  }
+
+  return {
+    service: {
+      name: 'manager-api',
+      startupState,
+      startupError,
+      persistenceReady,
+      generatedAt: new Date().toISOString()
+    },
+    summary,
+    profiles: instances
+  };
+}
+
+async function buildPrometheusMetrics() {
+  const snapshot = await buildMonitoringSnapshot();
+  const lines = [];
+
+  lines.push('# HELP vpn_control_plane_up manager-api process is alive.');
+  lines.push('# TYPE vpn_control_plane_up gauge');
+  appendMetricLine(lines, 'vpn_control_plane_up', 1);
+
+  lines.push('# HELP vpn_control_plane_startup_state Current startup state of manager-api.');
+  lines.push('# TYPE vpn_control_plane_startup_state gauge');
+  for (const state of ['BOOTING', 'RECONCILING', 'READY', 'ERROR']) {
+    appendMetricLine(lines, 'vpn_control_plane_startup_state', snapshot.service.startupState === state ? 1 : 0, { state });
+  }
+
+  lines.push('# HELP vpn_profiles_total Total number of VPN profiles.');
+  lines.push('# TYPE vpn_profiles_total gauge');
+  appendMetricLine(lines, 'vpn_profiles_total', snapshot.summary.totalProfiles);
+
+  lines.push('# HELP vpn_profiles_desired_total Number of profiles by desired state.');
+  lines.push('# TYPE vpn_profiles_desired_total gauge');
+  appendMetricLine(lines, 'vpn_profiles_desired_total', snapshot.summary.desiredConnected, { state: 'CONNECTED' });
+  appendMetricLine(lines, 'vpn_profiles_desired_total', snapshot.summary.desiredStopped, { state: 'STOPPED' });
+  appendMetricLine(lines, 'vpn_profiles_desired_total', snapshot.summary.desiredError, { state: 'ERROR' });
+
+  lines.push('# HELP vpn_runtime_containers_running Number of running runtime containers.');
+  lines.push('# TYPE vpn_runtime_containers_running gauge');
+  appendMetricLine(lines, 'vpn_runtime_containers_running', snapshot.summary.runningContainers);
+
+  lines.push('# HELP vpn_workers_connected Number of connected VPN workers.');
+  lines.push('# TYPE vpn_workers_connected gauge');
+  appendMetricLine(lines, 'vpn_workers_connected', snapshot.summary.connectedWorkers);
+
+  lines.push('# HELP vpn_workers_problem Number of workers with degraded, error, unreachable or stopped status.');
+  lines.push('# TYPE vpn_workers_problem gauge');
+  appendMetricLine(lines, 'vpn_workers_problem', snapshot.summary.workerProblems);
+
+  lines.push('# HELP vpn_profile_desired_connected Desired profile state is CONNECTED.');
+  lines.push('# TYPE vpn_profile_desired_connected gauge');
+  lines.push('# HELP vpn_runtime_container_running Runtime container is running.');
+  lines.push('# TYPE vpn_runtime_container_running gauge');
+  lines.push('# HELP vpn_worker_connected Worker runtime status is CONNECTED.');
+  lines.push('# TYPE vpn_worker_connected gauge');
+  lines.push('# HELP vpn_worker_problem Worker runtime status indicates a problem.');
+  lines.push('# TYPE vpn_worker_problem gauge');
+  lines.push('# HELP vpn_port_forwarding_applied Port forwarding rules are applied.');
+  lines.push('# TYPE vpn_port_forwarding_applied gauge');
+  lines.push('# HELP vpn_firewall_applied Firewall rules are applied.');
+  lines.push('# TYPE vpn_firewall_applied gauge');
+  lines.push('# HELP vpn_profile_last_handshake_age_seconds Seconds since last handshake.');
+  lines.push('# TYPE vpn_profile_last_handshake_age_seconds gauge');
+  lines.push('# HELP vpn_profile_last_handshake_timestamp_seconds Unix timestamp of the last handshake.');
+  lines.push('# TYPE vpn_profile_last_handshake_timestamp_seconds gauge');
+
+  for (const item of snapshot.profiles) {
+    const labels = {
+      profile_id: item.profileId,
+      profile_name: item.name,
+      type: item.type,
+      host: item.host
+    };
+
+    appendMetricLine(lines, 'vpn_profile_desired_connected', item.managerStatus === 'CONNECTED' ? 1 : 0, labels);
+    appendMetricLine(lines, 'vpn_runtime_container_running', isContainerRunning(item.runtimeContainerState), labels);
+    appendMetricLine(lines, 'vpn_worker_connected', isWorkerConnected(item.workerStatus), labels);
+    appendMetricLine(lines, 'vpn_worker_problem', isWorkerProblem(item.workerStatus), labels);
+    appendMetricLine(lines, 'vpn_port_forwarding_applied', isStatusApplied(item.portForwardingStatus), labels);
+    appendMetricLine(lines, 'vpn_firewall_applied', isStatusApplied(item.firewallStatus), labels);
+    appendMetricLine(lines, 'vpn_profile_last_handshake_age_seconds', toAgeSeconds(item.lastHandshakeAt), labels);
+    appendMetricLine(lines, 'vpn_profile_last_handshake_timestamp_seconds', toUnixTimestampSeconds(item.lastHandshakeAt), labels);
+  }
+
+  lines.push('');
+  return lines.join('\n');
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -818,9 +1067,26 @@ app.use((req, res, next) => {
     return next();
   }
 
+  if (req.path === '/metrics' || req.path === '/monitoring/status') {
+    if (!isMonitoringTokenValid(req)) {
+      return res.status(401).json({
+        message: 'Monitoring authentication required'
+      });
+    }
+    return next();
+  }
+
+  if (!isApiRequestAuthenticated(req)) {
+    return res.status(401).json({
+      message: 'Authentication required'
+    });
+  }
+
   const isReadOnlyRequest = req.method === 'GET' && (
     req.path === '/vpn-profiles' ||
     req.path === '/vpn-instances' ||
+    req.path === '/metrics' ||
+    req.path === '/monitoring/status' ||
     /^\/vpn-profiles\/[^/]+$/.test(req.path)
   );
 
@@ -1003,33 +1269,16 @@ app.post('/vpn-profiles/:id/disconnect', async (req, res) => {
 });
 
 app.get('/vpn-instances', async (req, res) => {
-  const result = [];
+  res.json(await collectInstanceStatuses());
+});
 
-  for (const profile of profiles.values()) {
-    const containerName = profile.runtimeContainerName || getRuntimeContainerName(profile);
-    const runtime = await fetchRuntimeStatus(containerName);
+app.get('/monitoring/status', async (req, res) => {
+  res.json(await buildMonitoringSnapshot());
+});
 
-    result.push({
-      profileId: profile.id,
-      name: profile.name,
-      type: profile.type,
-      managerStatus: profile.status,
-      runtimeContainerName: profile.runtimeContainerName,
-      runtimeImage: profile.runtimeImage || RUNTIME_IMAGES[profile.type],
-      runtimeContainerState: runtime.containerState,
-      workerStatus: runtime.runtimeStatus,
-      firewallStatus: runtime.firewallStatus || 'NOT_CONFIGURED',
-      firewallMessage: runtime.firewallMessage || null,
-      portForwardingStatus: runtime.portForwardingStatus || 'NOT_CONFIGURED',
-      portForwardingMessage: runtime.portForwardingMessage || null,
-      lastHandshakeAt: runtime.lastHandshakeAt || null,
-      workerConnectedAt: runtime.connectedAt,
-      workerLastMessage: runtime.lastMessage,
-      lastError: profile.lastError || null
-    });
-  }
-
-  res.json(result);
+app.get('/metrics', async (req, res) => {
+  res.type('text/plain; version=0.0.4; charset=utf-8');
+  res.send(await buildPrometheusMetrics());
 });
 
 async function bootstrap() {

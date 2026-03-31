@@ -144,6 +144,176 @@ environment:
 - Если `PANEL_AUTH_USERNAME` и `PANEL_AUTH_PASSWORD` пустые, вход отключён.
 - `PANEL_AUTH_SECRET` рекомендуется задавать явно, чтобы cookie сессии не зависела от пароля напрямую.
 - После успешного входа панель выдаёт `httpOnly` cookie и открывает основной интерфейс.
+- Эти же переменные нужно передавать и в `manager-api`: тогда прямые вызовы к `/api/vpn-*` без входа в панель будут получать `401`, а браузерный фронт продолжит работать через общую cookie-сессию.
+
+## Защита Monitoring Endpoint-ов
+
+Для `manager-api` можно отдельно задать:
+
+- `MONITORING_TOKEN`
+
+Если он задан, endpoint-ы мониторинга:
+
+- `/metrics`
+- `/monitoring/status`
+
+требуют заголовок:
+
+```http
+Authorization: Bearer <MONITORING_TOKEN>
+```
+
+Это удобно для Prometheus и Zabbix, чтобы:
+
+- UI/API панели были защищены cookie-сессией
+- monitoring не зависел от браузерного логина
+- прямой доступ к метрикам без токена был закрыт
+
+Если `MONITORING_TOKEN` не задан, monitoring endpoint-ы используют ту же cookie-аутентификацию, что и обычный API панели.
+
+## Мониторинг Через Prometheus И Zabbix
+
+Для простого внешнего мониторинга `manager-api` теперь отдаёт два endpoint-а:
+
+- `GET /metrics` — Prometheus text exposition format
+- `GET /monitoring/status` — JSON со сводным состоянием панели и всех профилей
+
+Оба endpoint-а читают уже существующее состояние профилей и runtime-контейнеров, ничего дополнительно внутри `worker-runtime` настраивать не нужно.
+
+### Prometheus
+
+Пример scrape job:
+
+```yaml
+scrape_configs:
+  - job_name: vpn_control_panel
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials: change-this-monitoring-token
+    static_configs:
+      - targets:
+          - manager-api:3001
+```
+
+Если Prometheus ходит через `nginx`, можно использовать внешний адрес:
+
+```yaml
+scrape_configs:
+  - job_name: vpn_control_panel
+    metrics_path: /api/metrics
+    scheme: https
+    authorization:
+      type: Bearer
+      credentials: change-this-monitoring-token
+    static_configs:
+      - targets:
+          - vcp.example.com
+```
+
+Основные метрики:
+
+- `vpn_control_plane_up` — `manager-api` отвечает
+- `vpn_control_plane_startup_state{state="..."}` — состояние запуска (`BOOTING`, `RECONCILING`, `READY`, `ERROR`)
+- `vpn_profiles_total` — общее количество профилей
+- `vpn_profiles_desired_total{state="CONNECTED|STOPPED|ERROR"}` — desired state профилей
+- `vpn_runtime_containers_running` — количество реально запущенных runtime-контейнеров
+- `vpn_workers_connected` — количество реально подключённых VPN runtime
+- `vpn_workers_problem` — количество проблемных runtime (`ERROR`, `DEGRADED`, `UNREACHABLE`, `STOPPED`)
+- `vpn_profile_desired_connected{profile_id="...",profile_name="...",type="...",host="..."}` — профиль должен быть подключён
+- `vpn_runtime_container_running{...}` — контейнер реально запущен
+- `vpn_worker_connected{...}` — worker реально в состоянии `CONNECTED`
+- `vpn_worker_problem{...}` — worker в проблемном состоянии
+- `vpn_port_forwarding_applied{...}` — Port Forwarding применён
+- `vpn_firewall_applied{...}` — firewall применён
+- `vpn_profile_last_handshake_age_seconds{...}` — сколько секунд прошло с последнего handshake
+- `vpn_profile_last_handshake_timestamp_seconds{...}` — timestamp последнего handshake
+
+### Zabbix
+
+Самый простой способ — использовать `HTTP agent` item на endpoint:
+
+- `/monitoring/status`
+
+Пример внешнего URL через `nginx`:
+
+- `https://vcp.example.com/api/monitoring/status`
+
+Для запроса нужно передавать заголовок:
+
+```http
+Authorization: Bearer <MONITORING_TOKEN>
+```
+
+Что удобно забирать из JSON:
+
+- `$.service.startupState`
+- `$.service.startupError`
+- `$.summary.totalProfiles`
+- `$.summary.desiredConnected`
+- `$.summary.runningContainers`
+- `$.summary.connectedWorkers`
+- `$.summary.workerProblems`
+
+Если нужны данные по конкретному профилю, удобно использовать LLD или dependent items по массиву `profiles`.
+
+Пример структуры ответа:
+
+```json
+{
+  "service": {
+    "name": "manager-api",
+    "startupState": "READY",
+    "startupError": null,
+    "persistenceReady": true,
+    "generatedAt": "2026-03-31T12:00:00.000Z"
+  },
+  "summary": {
+    "totalProfiles": 2,
+    "desiredConnected": 1,
+    "desiredStopped": 1,
+    "desiredError": 0,
+    "runningContainers": 1,
+    "connectedWorkers": 1,
+    "workerProblems": 0
+  },
+  "profiles": [
+    {
+      "profileId": "uuid",
+      "name": "ovpn",
+      "type": "OPENVPN",
+      "host": "vpn.example.com",
+      "port": 7050,
+      "managerStatus": "CONNECTED",
+      "runtimeContainerState": "running",
+      "workerStatus": "CONNECTED",
+      "firewallStatus": "NOT_CONFIGURED",
+      "portForwardingStatus": "APPLIED",
+      "lastHandshakeAt": "2026-03-31T11:59:30.000Z",
+      "workerLastMessage": "OpenVPN tunnel is active on tap0",
+      "lastError": null
+    }
+  ]
+}
+```
+
+### Рекомендация По Публикации Endpoint-ов
+
+Если панель стоит за `nginx`, удобная схема такая:
+
+- `/` -> `manager-web`
+- `/api/` -> `manager-api`
+
+Тогда monitoring endpoint-ы будут доступны как:
+
+- `/api/metrics`
+- `/api/monitoring/status`
+
+Если эти данные не должны быть доступны публично, лучше ограничить доступ к ним:
+
+- по IP
+- через basic auth на уровне `nginx`
+- или публиковать их только во внутренней сети мониторинга
 
 ## Перезапуск и восстановление
 
