@@ -47,7 +47,9 @@ const state = {
   reconnectAttempts: 0,
   ipsec: {
     interfaceMissingSince: null,
-    keepaliveFailing: false
+    keepaliveFailing: false,
+    activeInterface: null,
+    lastNetworkReconcileAt: null
   },
   openvpn: {
     initializedAt: null,
@@ -235,8 +237,7 @@ function applyBuiltInIptablesForIpsec(vpnInterface) {
   ];
 
   for (const [command, args] of rules) {
-    run(command, args);
-    registerDeleteVariant(command, args);
+    ensureIptablesRule(command, args);
   }
 }
 
@@ -316,20 +317,16 @@ function applyPortForwarding(vpnInterface) {
       }
 
       const preroutingArgs = ['-t', 'nat', '-A', 'PREROUTING', '-i', 'eth0', '-p', protocol, '--dport', hostPort, '-j', 'DNAT', '--to-destination', `${targetAddress}:${targetPort}`];
-      run('iptables', preroutingArgs);
-      registerDeleteVariant('iptables', preroutingArgs);
+      ensureIptablesRule('iptables', preroutingArgs);
 
       const forwardArgs = ['-A', 'FORWARD', '-i', 'eth0', '-o', vpnInterface, '-d', targetAddress, '-p', protocol, '--dport', targetPort, '-j', 'ACCEPT'];
-      run('iptables', forwardArgs);
-      registerDeleteVariant('iptables', forwardArgs);
+      ensureIptablesRule('iptables', forwardArgs);
 
       const reverseForwardArgs = ['-A', 'FORWARD', '-i', vpnInterface, '-o', 'eth0', '-s', targetAddress, '-p', protocol, '--sport', targetPort, '-m', 'conntrack', '--ctstate', 'ESTABLISHED,RELATED', '-j', 'ACCEPT'];
-      run('iptables', reverseForwardArgs);
-      registerDeleteVariant('iptables', reverseForwardArgs);
+      ensureIptablesRule('iptables', reverseForwardArgs);
 
       const postroutingArgs = ['-t', 'nat', '-A', 'POSTROUTING', '-o', vpnInterface, '-d', targetAddress, '-p', protocol, '--dport', targetPort, '-j', 'MASQUERADE'];
-      run('iptables', postroutingArgs);
-      registerDeleteVariant('iptables', postroutingArgs);
+      ensureIptablesRule('iptables', postroutingArgs);
     }
 
     state.portForwardingStatus = 'APPLIED';
@@ -701,6 +698,49 @@ function stopOpenvpnProcess() {
   state.openvpn.recentLogs = [];
 }
 
+function detectIpsecPppInterface() {
+  const candidates = ['ppp0', 'ppp1', 'ppp2', 'ppp3'];
+  for (const iface of candidates) {
+    try {
+      run('ip', ['link', 'show', iface]);
+      return iface;
+    } catch {}
+  }
+
+  try {
+    const output = run('sh', ['-lc', "ip -o link show | awk -F': ' '$2 ~ /^ppp/ {print $2; exit}'"]).trim();
+    return output || null;
+  } catch {
+    return null;
+  }
+}
+
+function commandSucceeds(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    ...options
+  });
+  return result.status === 0;
+}
+
+function toCheckArgs(addArgs) {
+  const checkArgs = [...addArgs];
+  const actionIndex = checkArgs.findIndex((item) => item === '-A' || item === '-I');
+  if (actionIndex >= 0) checkArgs[actionIndex] = '-C';
+  return checkArgs;
+}
+
+function ensureIptablesRule(command, addArgs) {
+  const checkArgs = toCheckArgs(addArgs);
+  if (commandSucceeds(command, checkArgs)) {
+    return false;
+  }
+  run(command, addArgs);
+  registerDeleteVariant(command, addArgs);
+  return true;
+}
+
 function getIpsecKeepaliveTargets() {
   const config = parsePortForwardingConfig();
   if (!config.enabled) {
@@ -816,10 +856,22 @@ function ensureIpsecRoutesForPortForwarding(vpnInterface) {
   }
 
   for (const targetCidr of uniqueTargets) {
-    run('ip', ['route', 'replace', targetCidr, 'dev', vpnInterface]);
-    registerCleanup('ip', ['route', 'del', targetCidr, 'dev', vpnInterface]);
-    log(`Ensured IPsec route ${targetCidr} via ${vpnInterface}`);
+    const targetIp = targetCidr.split('/')[0];
+    const routeInfo = spawnSync('ip', ['route', 'get', targetIp], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const hasExpectedInterface = routeInfo.status === 0 && new RegExp(`\\bdev\\s+${vpnInterface}\\b`).test(routeInfo.stdout || '');
+    if (!hasExpectedInterface) {
+      run('ip', ['route', 'replace', targetCidr, 'dev', vpnInterface]);
+      registerCleanup('ip', ['route', 'del', targetCidr, 'dev', vpnInterface]);
+      log(`Ensured IPsec route ${targetCidr} via ${vpnInterface}`);
+    }
   }
+}
+
+function reconcileIpsecNetworking(vpnInterface) {
+  ensureIpsecRoutesForPortForwarding(vpnInterface);
+  applyBuiltInIptablesForIpsec(vpnInterface);
+  applyPortForwarding(vpnInterface);
+  state.ipsec.lastNetworkReconcileAt = new Date().toISOString();
 }
 
 function pushOpenvpnRecentLog(line) {
@@ -874,6 +926,7 @@ function buildOpenvpnStartupDiagnostics() {
 
 function stopIpsecProcesses() {
   stopIpsecKeepalive();
+  state.ipsec.activeInterface = null;
 
   try {
     runSafe('sh', ['-lc', "printf 'd vpn-lac\n' > /var/run/xl2tpd/l2tp-control"]);
@@ -1054,6 +1107,16 @@ async function waitForIpsecStarter(timeoutMs = 15000) {
   throw new Error('strongSwan did not become ready in time');
 }
 
+async function waitForPppInterface(timeoutMs = 30000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const iface = detectIpsecPppInterface();
+    if (iface) return iface;
+    await sleep(1000);
+  }
+  throw new Error(`PPP interface did not appear within ${timeoutMs}ms`);
+}
+
 async function configureIpsec() {
   state.status = 'STARTING';
   state.lastMessage = 'Bootstrapping IPsec/L2TP tunnel';
@@ -1092,12 +1155,11 @@ async function configureIpsec() {
 
   await waitForPath(files.controlPath, 15000);
   run('sh', ['-lc', `printf 'c ${files.lacName}\n' > ${files.controlPath}`]);
-  await waitForInterface('ppp0', 30000);
+  const pppInterface = await waitForPppInterface(30000);
+  state.ipsec.activeInterface = pppInterface;
 
-  ensureIpsecRoutesForPortForwarding('ppp0');
-  applyBuiltInIptablesForIpsec('ppp0');
+  reconcileIpsecNetworking(pppInterface);
   applyCustomFirewall();
-  applyPortForwarding('ppp0');
   startIpsecKeepalive();
 
   if (files.dnsServers.length > 0) {
@@ -1107,7 +1169,7 @@ async function configureIpsec() {
   state.status = 'CONNECTED';
   state.connectedAt = new Date().toISOString();
   state.lastHandshakeAt = new Date().toISOString();
-  state.lastMessage = `IPsec/L2TP tunnel is active on ppp0 to ${PROFILE_HOST}`;
+  state.lastMessage = `IPsec/L2TP tunnel is active on ${pppInterface} to ${PROFILE_HOST}`;
 }
 
 async function recoverTunnel(reason) {
@@ -1195,8 +1257,8 @@ async function monitorOpenvpn() {
 }
 
 async function monitorIpsec() {
-  const iface = detectVpnInterface();
-  if (!iface || !iface.startsWith('ppp')) {
+  const iface = detectIpsecPppInterface();
+  if (!iface) {
     const now = Date.now();
     if (!state.ipsec.interfaceMissingSince) {
       state.ipsec.interfaceMissingSince = new Date(now).toISOString();
@@ -1217,6 +1279,7 @@ async function monitorIpsec() {
   }
 
   state.ipsec.interfaceMissingSince = null;
+  state.ipsec.activeInterface = iface;
 
   try {
     run('ipsec', ['status', 'l2tp-psk']);
@@ -1229,6 +1292,11 @@ async function monitorIpsec() {
 
   state.status = 'CONNECTED';
   state.lastHandshakeAt = new Date().toISOString();
+  try {
+    reconcileIpsecNetworking(iface);
+  } catch (error) {
+    log(`IPsec network reconcile warning on ${iface}: ${error.message}`);
+  }
   state.lastMessage = `IPsec/L2TP tunnel is active on ${iface}`;
 }
 
