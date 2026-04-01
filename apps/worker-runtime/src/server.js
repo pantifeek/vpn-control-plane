@@ -21,7 +21,9 @@ const IPSEC_INTERFACE_MISSING_GRACE_MS = Number(process.env.RUNTIME_IPSEC_INTERF
 const IPSEC_KEEPALIVE_ENABLED = String(process.env.RUNTIME_IPSEC_KEEPALIVE_ENABLED || 'true').toLowerCase() !== 'false';
 const IPSEC_KEEPALIVE_INTERVAL_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_INTERVAL_MS || 20000);
 const IPSEC_KEEPALIVE_TIMEOUT_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_TIMEOUT_MS || 3000);
-const IPSEC_KEEPALIVE_FAILURE_THRESHOLD = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_FAILURE_THRESHOLD || 2);
+const IPSEC_KEEPALIVE_FAILURE_THRESHOLD = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_FAILURE_THRESHOLD || 6);
+const IPSEC_KEEPALIVE_SOFT_RESET_THRESHOLD = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_SOFT_RESET_THRESHOLD || 2);
+const IPSEC_KEEPALIVE_MIN_RECOVERY_INTERVAL_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_MIN_RECOVERY_INTERVAL_MS || 180000);
 const IPSEC_FAILFAST_RESET_ENABLED = String(process.env.RUNTIME_IPSEC_FAILFAST_RESET_ENABLED || 'true').toLowerCase() !== 'false';
 
 const app = express();
@@ -51,6 +53,8 @@ const state = {
     interfaceMissingSince: null,
     keepaliveFailing: false,
     keepaliveFailureCount: 0,
+    keepaliveSoftResetAppliedAtFailure: 0,
+    lastRecoveryAt: null,
     activeInterface: null,
     lastNetworkReconcileAt: null
   },
@@ -168,7 +172,8 @@ function registerCleanup(command, args) {
 
 function registerDeleteVariant(command, addArgs) {
   const deleteArgs = [...addArgs];
-  if (deleteArgs[0] === '-A' || deleteArgs[0] === '-I') deleteArgs[0] = '-D';
+  const actionIndex = deleteArgs.findIndex((item) => item === '-A' || item === '-I');
+  if (actionIndex >= 0) deleteArgs[actionIndex] = '-D';
   registerCleanup(command, deleteArgs);
 }
 
@@ -853,16 +858,33 @@ async function runIpsecKeepaliveTick() {
       log(`IPsec keepalive probe failed for one or more targets: ${targets.map((t) => `${t.host}:${t.port}`).join(', ')}`);
     }
 
+    if (
+      state.ipsec.keepaliveFailureCount >= Math.max(1, IPSEC_KEEPALIVE_SOFT_RESET_THRESHOLD)
+      && state.ipsec.keepaliveSoftResetAppliedAtFailure !== state.ipsec.keepaliveFailureCount
+    ) {
+      state.ipsec.keepaliveSoftResetAppliedAtFailure = state.ipsec.keepaliveFailureCount;
+      forceResetPortForwardTcpSessions();
+    }
+
     if (!recoverInProgress && state.ipsec.keepaliveFailureCount >= Math.max(1, IPSEC_KEEPALIVE_FAILURE_THRESHOLD)) {
+      const now = Date.now();
+      const lastRecoveryAt = state.ipsec.lastRecoveryAt ? new Date(state.ipsec.lastRecoveryAt).getTime() : 0;
+      if (lastRecoveryAt > 0 && now - lastRecoveryAt < Math.max(0, IPSEC_KEEPALIVE_MIN_RECOVERY_INTERVAL_MS)) {
+        state.status = 'DEGRADED';
+        state.lastMessage = `IPsec keepalive failing ${state.ipsec.keepaliveFailureCount} time(s), waiting before full recovery`;
+        return;
+      }
+
       state.status = 'DEGRADED';
       state.lastMessage = `IPsec keepalive failed ${state.ipsec.keepaliveFailureCount} time(s), triggering fail-fast recovery`;
-      forceResetPortForwardTcpSessions();
+      state.ipsec.lastRecoveryAt = new Date().toISOString();
       await recoverTunnel('ipsec keepalive failed');
     }
     return;
   }
 
   state.ipsec.keepaliveFailureCount = 0;
+  state.ipsec.keepaliveSoftResetAppliedAtFailure = 0;
   if (state.ipsec.keepaliveFailing) {
     state.ipsec.keepaliveFailing = false;
     log('IPsec keepalive probe recovered');
