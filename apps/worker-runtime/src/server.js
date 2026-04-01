@@ -38,6 +38,7 @@ const IPSEC_XL2TPD_ORPHAN_TUNNEL_THRESHOLD = readNumberEnv('RUNTIME_IPSEC_XL2TPD
 const IPSEC_XL2TPD_ORPHAN_TUNNEL_WINDOW_MS = readNumberEnv('RUNTIME_IPSEC_XL2TPD_ORPHAN_TUNNEL_WINDOW_MS', 15000);
 const IPSEC_XL2TPD_ORPHAN_RECOVERY_COOLDOWN_MS = readNumberEnv('RUNTIME_IPSEC_XL2TPD_ORPHAN_RECOVERY_COOLDOWN_MS', 60000);
 const IPSEC_XL2TPD_ORPHAN_RECOVERY_ENABLED = String(process.env.RUNTIME_IPSEC_XL2TPD_ORPHAN_RECOVERY_ENABLED || 'false').toLowerCase() === 'true';
+const IPSEC_XL2TPD_TIMEOUT_RECOVERY_ENABLED = String(process.env.RUNTIME_IPSEC_XL2TPD_TIMEOUT_RECOVERY_ENABLED || 'false').toLowerCase() === 'true';
 const IS_IPSEC_TYPE = VPN_TYPE === 'IPSEC' || VPN_TYPE === 'IPSEC.B';
 
 const app = express();
@@ -971,6 +972,8 @@ async function runIpsecKeepaliveTick() {
     }
 
     if (
+      !ipsecTransportHealthy
+      && !recoverInProgress &&
       state.ipsec.keepaliveFailureCount >= Math.max(1, IPSEC_KEEPALIVE_SOFT_RESET_THRESHOLD)
       && state.ipsec.keepaliveSoftResetAppliedAtFailure !== state.ipsec.keepaliveFailureCount
     ) {
@@ -1445,10 +1448,17 @@ async function configureIpsec() {
     handleIpsecOrphanTunnelLog(text);
 
     if (/Maximum retries exceeded for tunnel/i.test(text)) {
+      const transportHealthy = isIpsecTransportHealthy();
       state.status = 'DEGRADED';
-      state.lastMessage = 'L2TP control tunnel timed out, triggering recovery';
-      forceResetPortForwardTcpSessions();
-      recoverTunnel('xl2tpd tunnel timeout').catch((error) => log(`recovery after xl2tpd timeout failed: ${error.message}`));
+      state.lastMessage = transportHealthy
+        ? 'L2TP control timeout observed, but IPsec transport remains healthy'
+        : 'L2TP control tunnel timed out';
+      if (IPSEC_XL2TPD_TIMEOUT_RECOVERY_ENABLED && !transportHealthy) {
+        forceResetPortForwardTcpSessions();
+        recoverTunnel('xl2tpd tunnel timeout').catch((error) => log(`recovery after xl2tpd timeout failed: ${error.message}`));
+      } else {
+        log(`Skipping recovery on xl2tpd timeout (enabled=${IPSEC_XL2TPD_TIMEOUT_RECOVERY_ENABLED}, transportHealthy=${transportHealthy})`);
+      }
     }
   });
   xl2tpdProcess.on('exit', (code, signal) => {
