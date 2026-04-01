@@ -729,16 +729,32 @@ function stopOpenvpnProcess() {
 
 function detectIpsecPppInterface() {
   const candidates = ['ppp0', 'ppp1', 'ppp2', 'ppp3'];
+  const existing = [];
+
   for (const iface of candidates) {
     try {
       run('ip', ['link', 'show', iface]);
-      return iface;
+      existing.push(iface);
     } catch {}
   }
 
+  for (const iface of existing) {
+    if (isInterfaceUp(iface)) {
+      return iface;
+    }
+  }
+
+  if (existing.length > 0) {
+    return existing[0];
+  }
+
   try {
-    const output = run('sh', ['-lc', "ip -o link show | awk -F': ' '$2 ~ /^ppp/ {print $2; exit}'"]).trim();
-    return output || null;
+    const upOutput = run('sh', ['-lc', "ip -o link show | awk -F': ' '$2 ~ /^ppp/ && $0 ~ /<[^>]*UP[^>]*LOWER_UP[^>]*>/ {print $2; exit}'"]).trim();
+    if (upOutput) {
+      return upOutput;
+    }
+    const anyOutput = run('sh', ['-lc', "ip -o link show | awk -F': ' '$2 ~ /^ppp/ {print $2; exit}'"]).trim();
+    return anyOutput || null;
   } catch {
     return null;
   }
