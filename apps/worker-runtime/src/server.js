@@ -57,6 +57,7 @@ const state = {
     keepaliveSoftResetAppliedAtFailure: 0,
     keepaliveL2tpRedialAppliedAtFailure: 0,
     redialInProgress: false,
+    clientResetGateEnabled: false,
     lastRecoveryAt: null,
     lastL2tpRedialAt: null,
     activeInterface: null,
@@ -832,6 +833,43 @@ function forceResetPortForwardTcpSessions() {
   }
 }
 
+function getIpsecResetGateRules() {
+  const targets = getIpsecKeepaliveTargets();
+  const rules = [];
+  for (const target of targets) {
+    const port = String(target.port);
+    rules.push(['-I', 'FORWARD', '1', '-i', 'eth0', '-d', target.host, '-p', 'tcp', '--dport', port, '-j', 'REJECT', '--reject-with', 'tcp-reset']);
+    rules.push(['-I', 'FORWARD', '1', '-o', 'eth0', '-s', target.host, '-p', 'tcp', '--sport', port, '-j', 'REJECT', '--reject-with', 'tcp-reset']);
+  }
+  return rules;
+}
+
+function setIpsecClientResetGate(enabled) {
+  if (VPN_TYPE !== 'IPSEC') return;
+  if (enabled === state.ipsec.clientResetGateEnabled) return;
+
+  const rules = getIpsecResetGateRules();
+  if (rules.length === 0) return;
+
+  if (enabled) {
+    for (const addArgs of rules) {
+      runSafe('iptables', addArgs);
+    }
+    state.ipsec.clientResetGateEnabled = true;
+    return;
+  }
+
+  for (const addArgs of rules) {
+    const delArgs = ['-D', 'FORWARD', ...addArgs.slice(3)];
+    // Best-effort cleanup: remove all duplicates if any were inserted.
+    for (let i = 0; i < 5; i += 1) {
+      if (!commandSucceeds('iptables', delArgs)) break;
+      runSafe('iptables', delArgs);
+    }
+  }
+  state.ipsec.clientResetGateEnabled = false;
+}
+
 async function redialL2tpSession(reason = 'unspecified') {
   if (VPN_TYPE !== 'IPSEC' || !ipsecRuntime?.controlPath || !ipsecRuntime?.lacName || state.ipsec.redialInProgress) {
     return false;
@@ -840,7 +878,7 @@ async function redialL2tpSession(reason = 'unspecified') {
   state.ipsec.redialInProgress = true;
   try {
     log(`Attempting L2TP session redial: ${reason}`);
-    forceResetPortForwardTcpSessions();
+    setIpsecClientResetGate(true);
     run('sh', ['-lc', `printf 'd ${ipsecRuntime.lacName}\n' > ${ipsecRuntime.controlPath}`]);
     await sleep(800);
     run('sh', ['-lc', `printf 'c ${ipsecRuntime.lacName}\n' > ${ipsecRuntime.controlPath}`]);
@@ -881,6 +919,7 @@ async function runIpsecKeepaliveTick() {
     state.ipsec.keepaliveFailureCount += 1;
     if (!state.ipsec.keepaliveFailing) {
       state.ipsec.keepaliveFailing = true;
+      setIpsecClientResetGate(true);
       log(`IPsec keepalive probe failed for one or more targets: ${targets.map((t) => `${t.host}:${t.port}`).join(', ')}`);
     }
 
@@ -941,6 +980,7 @@ async function runIpsecKeepaliveTick() {
   state.ipsec.keepaliveL2tpRedialAppliedAtFailure = 0;
   if (state.ipsec.keepaliveFailing) {
     state.ipsec.keepaliveFailing = false;
+    setIpsecClientResetGate(false);
     log('IPsec keepalive probe recovered');
   }
 }
@@ -1303,6 +1343,7 @@ async function configureIpsec() {
   reconcileIpsecNetworking(pppInterface);
   applyCustomFirewall();
   startIpsecKeepalive();
+  setIpsecClientResetGate(false);
 
   if (files.dnsServers.length > 0) {
     log(`DNS servers requested but not applied automatically inside the container: ${files.dnsServers.join(', ')}`);
