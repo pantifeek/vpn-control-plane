@@ -19,11 +19,11 @@ const OPENVPN_INTERFACE_TIMEOUT_MS = Number(process.env.RUNTIME_OPENVPN_INTERFAC
 const OPENVPN_STARTUP_LOG_TAIL = Number(process.env.RUNTIME_OPENVPN_STARTUP_LOG_TAIL || 30);
 const IPSEC_INTERFACE_MISSING_GRACE_MS = Number(process.env.RUNTIME_IPSEC_INTERFACE_MISSING_GRACE_MS || 300000);
 const IPSEC_KEEPALIVE_ENABLED = String(process.env.RUNTIME_IPSEC_KEEPALIVE_ENABLED || 'true').toLowerCase() !== 'false';
-const IPSEC_KEEPALIVE_INTERVAL_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_INTERVAL_MS || 20000);
+const IPSEC_KEEPALIVE_INTERVAL_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_INTERVAL_MS || 10000);
 const IPSEC_KEEPALIVE_TIMEOUT_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_TIMEOUT_MS || 3000);
-const IPSEC_KEEPALIVE_FAILURE_THRESHOLD = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_FAILURE_THRESHOLD || 6);
+const IPSEC_KEEPALIVE_FAILURE_THRESHOLD = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_FAILURE_THRESHOLD || 4);
 const IPSEC_KEEPALIVE_SOFT_RESET_THRESHOLD = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_SOFT_RESET_THRESHOLD || 2);
-const IPSEC_KEEPALIVE_L2TP_REDIAL_THRESHOLD = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_L2TP_REDIAL_THRESHOLD || 3);
+const IPSEC_KEEPALIVE_L2TP_REDIAL_THRESHOLD = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_L2TP_REDIAL_THRESHOLD || 2);
 const IPSEC_KEEPALIVE_MIN_RECOVERY_INTERVAL_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_MIN_RECOVERY_INTERVAL_MS || 180000);
 const IPSEC_FAILFAST_RESET_ENABLED = String(process.env.RUNTIME_IPSEC_FAILFAST_RESET_ENABLED || 'true').toLowerCase() !== 'false';
 
@@ -56,6 +56,7 @@ const state = {
     keepaliveFailureCount: 0,
     keepaliveSoftResetAppliedAtFailure: 0,
     keepaliveL2tpRedialAppliedAtFailure: 0,
+    redialInProgress: false,
     lastRecoveryAt: null,
     lastL2tpRedialAt: null,
     activeInterface: null,
@@ -832,21 +833,25 @@ function forceResetPortForwardTcpSessions() {
 }
 
 async function redialL2tpSession(reason = 'unspecified') {
-  if (VPN_TYPE !== 'IPSEC' || !ipsecRuntime?.controlPath || !ipsecRuntime?.lacName) {
+  if (VPN_TYPE !== 'IPSEC' || !ipsecRuntime?.controlPath || !ipsecRuntime?.lacName || state.ipsec.redialInProgress) {
     return false;
   }
 
+  state.ipsec.redialInProgress = true;
   try {
     log(`Attempting L2TP session redial: ${reason}`);
+    forceResetPortForwardTcpSessions();
     run('sh', ['-lc', `printf 'd ${ipsecRuntime.lacName}\n' > ${ipsecRuntime.controlPath}`]);
+    await sleep(800);
+    run('sh', ['-lc', `printf 'c ${ipsecRuntime.lacName}\n' > ${ipsecRuntime.controlPath}`]);
+    state.ipsec.lastL2tpRedialAt = new Date().toISOString();
+    return true;
   } catch (error) {
-    log(`L2TP disconnect command warning: ${error.message}`);
+    log(`L2TP redial failed: ${error.message}`);
+    return false;
+  } finally {
+    state.ipsec.redialInProgress = false;
   }
-
-  await sleep(800);
-  run('sh', ['-lc', `printf 'c ${ipsecRuntime.lacName}\n' > ${ipsecRuntime.controlPath}`]);
-  state.ipsec.lastL2tpRedialAt = new Date().toISOString();
-  return true;
 }
 
 async function runIpsecKeepaliveTick() {
@@ -894,7 +899,21 @@ async function runIpsecKeepaliveTick() {
     ) {
       state.ipsec.keepaliveL2tpRedialAppliedAtFailure = state.ipsec.keepaliveFailureCount;
       try {
-        await redialL2tpSession(`keepalive failed ${state.ipsec.keepaliveFailureCount} time(s)`);
+        const redialed = await redialL2tpSession(`keepalive failed ${state.ipsec.keepaliveFailureCount} time(s)`);
+        if (redialed) {
+          await sleep(1500);
+          const postRedialResults = await Promise.all(
+            targets.map((target) => probeTcpTarget(target.host, target.port, IPSEC_KEEPALIVE_TIMEOUT_MS))
+          );
+          const stillFailedAfterRedial = postRedialResults.some((ok) => !ok);
+          if (stillFailedAfterRedial && !recoverInProgress) {
+            state.status = 'DEGRADED';
+            state.lastMessage = 'IPsec keepalive still failing after L2TP redial, forcing full recovery';
+            state.ipsec.lastRecoveryAt = new Date().toISOString();
+            await recoverTunnel('keepalive failed after l2tp redial');
+            return;
+          }
+        }
       } catch (error) {
         log(`L2TP redial warning: ${error.message}`);
       }
