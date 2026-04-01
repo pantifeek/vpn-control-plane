@@ -6,26 +6,37 @@ const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
-const PORT = Number(process.env.PORT || 8080);
+function readNumberEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return fallback;
+  const normalized = String(raw).replace(/_/g, '');
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+const PORT = readNumberEnv('PORT', 8080);
 const VPN_TYPE = process.env.VPN_TYPE || 'UNKNOWN';
 const PROFILE_ID = process.env.VPN_PROFILE_ID || 'unknown-profile';
 const PROFILE_NAME = process.env.VPN_PROFILE_NAME || 'Unnamed profile';
 const PROFILE_HOST = process.env.VPN_PROFILE_HOST || '';
 const PROFILE_PORT = process.env.VPN_PROFILE_PORT || '';
 const PROFILE_USERNAME = process.env.VPN_PROFILE_USERNAME || '';
-const WATCHDOG_INTERVAL_MS = Number(process.env.RUNTIME_WATCHDOG_INTERVAL_MS || 15000);
-const STALE_HANDSHAKE_SECONDS = Number(process.env.RUNTIME_STALE_HANDSHAKE_SECONDS || 180);
-const OPENVPN_INTERFACE_TIMEOUT_MS = Number(process.env.RUNTIME_OPENVPN_INTERFACE_TIMEOUT_MS || 90000);
-const OPENVPN_STARTUP_LOG_TAIL = Number(process.env.RUNTIME_OPENVPN_STARTUP_LOG_TAIL || 30);
-const IPSEC_INTERFACE_MISSING_GRACE_MS = Number(process.env.RUNTIME_IPSEC_INTERFACE_MISSING_GRACE_MS || 300000);
+const WATCHDOG_INTERVAL_MS = readNumberEnv('RUNTIME_WATCHDOG_INTERVAL_MS', 15000);
+const STALE_HANDSHAKE_SECONDS = readNumberEnv('RUNTIME_STALE_HANDSHAKE_SECONDS', 180);
+const OPENVPN_INTERFACE_TIMEOUT_MS = readNumberEnv('RUNTIME_OPENVPN_INTERFACE_TIMEOUT_MS', 90000);
+const OPENVPN_STARTUP_LOG_TAIL = readNumberEnv('RUNTIME_OPENVPN_STARTUP_LOG_TAIL', 30);
+const IPSEC_INTERFACE_MISSING_GRACE_MS = readNumberEnv('RUNTIME_IPSEC_INTERFACE_MISSING_GRACE_MS', 300000);
 const IPSEC_KEEPALIVE_ENABLED = String(process.env.RUNTIME_IPSEC_KEEPALIVE_ENABLED || 'true').toLowerCase() !== 'false';
-const IPSEC_KEEPALIVE_INTERVAL_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_INTERVAL_MS || 10000);
-const IPSEC_KEEPALIVE_TIMEOUT_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_TIMEOUT_MS || 3000);
-const IPSEC_KEEPALIVE_FAILURE_THRESHOLD = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_FAILURE_THRESHOLD || 4);
-const IPSEC_KEEPALIVE_SOFT_RESET_THRESHOLD = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_SOFT_RESET_THRESHOLD || 2);
-const IPSEC_KEEPALIVE_L2TP_REDIAL_THRESHOLD = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_L2TP_REDIAL_THRESHOLD || 2);
-const IPSEC_KEEPALIVE_MIN_RECOVERY_INTERVAL_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_MIN_RECOVERY_INTERVAL_MS || 180000);
+const IPSEC_KEEPALIVE_INTERVAL_MS = readNumberEnv('RUNTIME_IPSEC_KEEPALIVE_INTERVAL_MS', 10000);
+const IPSEC_KEEPALIVE_TIMEOUT_MS = readNumberEnv('RUNTIME_IPSEC_KEEPALIVE_TIMEOUT_MS', 3000);
+const IPSEC_KEEPALIVE_FAILURE_THRESHOLD = readNumberEnv('RUNTIME_IPSEC_KEEPALIVE_FAILURE_THRESHOLD', 4);
+const IPSEC_KEEPALIVE_SOFT_RESET_THRESHOLD = readNumberEnv('RUNTIME_IPSEC_KEEPALIVE_SOFT_RESET_THRESHOLD', 2);
+const IPSEC_KEEPALIVE_L2TP_REDIAL_THRESHOLD = readNumberEnv('RUNTIME_IPSEC_KEEPALIVE_L2TP_REDIAL_THRESHOLD', 2);
+const IPSEC_KEEPALIVE_MIN_RECOVERY_INTERVAL_MS = readNumberEnv('RUNTIME_IPSEC_KEEPALIVE_MIN_RECOVERY_INTERVAL_MS', 180000);
 const IPSEC_FAILFAST_RESET_ENABLED = String(process.env.RUNTIME_IPSEC_FAILFAST_RESET_ENABLED || 'true').toLowerCase() !== 'false';
+const IPSEC_XL2TPD_ORPHAN_TUNNEL_THRESHOLD = readNumberEnv('RUNTIME_IPSEC_XL2TPD_ORPHAN_TUNNEL_THRESHOLD', 6);
+const IPSEC_XL2TPD_ORPHAN_TUNNEL_WINDOW_MS = readNumberEnv('RUNTIME_IPSEC_XL2TPD_ORPHAN_TUNNEL_WINDOW_MS', 15000);
+const IPSEC_XL2TPD_ORPHAN_RECOVERY_COOLDOWN_MS = readNumberEnv('RUNTIME_IPSEC_XL2TPD_ORPHAN_RECOVERY_COOLDOWN_MS', 60000);
 const IS_IPSEC_TYPE = VPN_TYPE === 'IPSEC' || VPN_TYPE === 'IPSEC.B';
 
 const app = express();
@@ -62,7 +73,11 @@ const state = {
     lastRecoveryAt: null,
     lastL2tpRedialAt: null,
     activeInterface: null,
-    lastNetworkReconcileAt: null
+    lastNetworkReconcileAt: null,
+    orphanTunnelId: null,
+    orphanTunnelSince: null,
+    orphanTunnelCount: 0,
+    orphanTunnelRecoveryAt: null
   },
   openvpn: {
     initializedAt: null,
@@ -1006,6 +1021,59 @@ function startIpsecKeepalive() {
   }, IPSEC_KEEPALIVE_INTERVAL_MS);
 }
 
+function resetIpsecOrphanTunnelState() {
+  state.ipsec.orphanTunnelId = null;
+  state.ipsec.orphanTunnelSince = null;
+  state.ipsec.orphanTunnelCount = 0;
+}
+
+function handleIpsecOrphanTunnelLog(text) {
+  if (!IS_IPSEC_TYPE || recoverInProgress) {
+    return;
+  }
+
+  const match = String(text).match(/Can not find tunnel\s+(\d+)/i);
+  if (!match) {
+    return;
+  }
+
+  const tunnelId = match[1];
+  const now = Date.now();
+  const currentSince = state.ipsec.orphanTunnelSince ? new Date(state.ipsec.orphanTunnelSince).getTime() : 0;
+  const sameTunnelWithinWindow =
+    state.ipsec.orphanTunnelId === tunnelId
+    && currentSince > 0
+    && now - currentSince <= Math.max(1000, IPSEC_XL2TPD_ORPHAN_TUNNEL_WINDOW_MS);
+
+  if (sameTunnelWithinWindow) {
+    state.ipsec.orphanTunnelCount += 1;
+  } else {
+    state.ipsec.orphanTunnelId = tunnelId;
+    state.ipsec.orphanTunnelSince = new Date(now).toISOString();
+    state.ipsec.orphanTunnelCount = 1;
+  }
+
+  if (state.ipsec.orphanTunnelCount < Math.max(1, IPSEC_XL2TPD_ORPHAN_TUNNEL_THRESHOLD)) {
+    return;
+  }
+
+  const lastRecoveryAt = state.ipsec.orphanTunnelRecoveryAt ? new Date(state.ipsec.orphanTunnelRecoveryAt).getTime() : 0;
+  if (lastRecoveryAt > 0 && now - lastRecoveryAt < Math.max(1000, IPSEC_XL2TPD_ORPHAN_RECOVERY_COOLDOWN_MS)) {
+    return;
+  }
+
+  state.ipsec.orphanTunnelRecoveryAt = new Date(now).toISOString();
+  const hits = state.ipsec.orphanTunnelCount;
+  resetIpsecOrphanTunnelState();
+
+  state.status = 'DEGRADED';
+  state.lastMessage = `Detected repeated L2TP orphan tunnel ${tunnelId} (${hits} hits), forcing L2TP redial`;
+
+  forceResetPortForwardTcpSessions();
+  redialL2tpSession(`xl2tpd orphan tunnel ${tunnelId} repeated ${hits} time(s)`)
+    .catch((error) => log(`L2TP redial after orphan tunnel failed: ${error.message}`));
+}
+
 function isIpv4Address(value) {
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(String(value || '').trim());
 }
@@ -1107,6 +1175,7 @@ function buildOpenvpnStartupDiagnostics() {
 function stopIpsecProcesses() {
   stopIpsecKeepalive();
   state.ipsec.activeInterface = null;
+  resetIpsecOrphanTunnelState();
 
   try {
     runSafe('sh', ['-lc', "printf 'd vpn-lac\n' > /var/run/xl2tpd/l2tp-control"]);
@@ -1330,6 +1399,7 @@ async function configureIpsec() {
     const text = String(chunk).trim();
     if (!text) return;
     log(`xl2tpd stderr: ${text}`);
+    handleIpsecOrphanTunnelLog(text);
 
     if (/Maximum retries exceeded for tunnel/i.test(text)) {
       state.status = 'DEGRADED';
@@ -1350,6 +1420,7 @@ async function configureIpsec() {
   run('sh', ['-lc', `printf 'c ${files.lacName}\n' > ${files.controlPath}`]);
   const pppInterface = await waitForPppInterface(30000);
   state.ipsec.activeInterface = pppInterface;
+  resetIpsecOrphanTunnelState();
 
   reconcileIpsecNetworking(pppInterface);
   applyCustomFirewall();
