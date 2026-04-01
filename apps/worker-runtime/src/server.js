@@ -1,6 +1,7 @@
 const express = require('express');
 const dns = require('dns').promises;
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
@@ -17,6 +18,9 @@ const STALE_HANDSHAKE_SECONDS = Number(process.env.RUNTIME_STALE_HANDSHAKE_SECON
 const OPENVPN_INTERFACE_TIMEOUT_MS = Number(process.env.RUNTIME_OPENVPN_INTERFACE_TIMEOUT_MS || 90000);
 const OPENVPN_STARTUP_LOG_TAIL = Number(process.env.RUNTIME_OPENVPN_STARTUP_LOG_TAIL || 30);
 const IPSEC_INTERFACE_MISSING_GRACE_MS = Number(process.env.RUNTIME_IPSEC_INTERFACE_MISSING_GRACE_MS || 300000);
+const IPSEC_KEEPALIVE_ENABLED = String(process.env.RUNTIME_IPSEC_KEEPALIVE_ENABLED || 'true').toLowerCase() !== 'false';
+const IPSEC_KEEPALIVE_INTERVAL_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_INTERVAL_MS || 20000);
+const IPSEC_KEEPALIVE_TIMEOUT_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_TIMEOUT_MS || 3000);
 
 const app = express();
 app.use(express.json());
@@ -42,7 +46,8 @@ const state = {
   cleanupCommands: [],
   reconnectAttempts: 0,
   ipsec: {
-    interfaceMissingSince: null
+    interfaceMissingSince: null,
+    keepaliveFailing: false
   },
   openvpn: {
     initializedAt: null,
@@ -58,6 +63,7 @@ let openvpnProcess = null;
 let openvpnRuntime = null;
 let xl2tpdProcess = null;
 let ipsecRuntime = null;
+let ipsecKeepaliveTimer = null;
 
 function detectOpenvpnInterfaceFromConfig(configText) {
   const lines = String(configText || '').split(/\r?\n/);
@@ -695,6 +701,99 @@ function stopOpenvpnProcess() {
   state.openvpn.recentLogs = [];
 }
 
+function getIpsecKeepaliveTargets() {
+  const config = parsePortForwardingConfig();
+  if (!config.enabled) {
+    return [];
+  }
+
+  const targets = new Map();
+  for (const rule of config.rules.filter((item) => item.enabled !== false)) {
+    const protocol = rule.protocol === 'udp' ? 'udp' : 'tcp';
+    if (protocol !== 'tcp') continue;
+    const host = String(rule.targetAddress || '').trim();
+    const port = Number(String(rule.targetPort || rule.hostPort || '').trim());
+    if (!host || !Number.isFinite(port) || port <= 0 || port > 65535) continue;
+    targets.set(`${host}:${port}`, { host, port });
+  }
+
+  return Array.from(targets.values());
+}
+
+function probeTcpTarget(host, port, timeoutMs) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host, port });
+    let settled = false;
+
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(ok);
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+  });
+}
+
+async function runIpsecKeepaliveTick() {
+  if (VPN_TYPE !== 'IPSEC' || !IPSEC_KEEPALIVE_ENABLED) {
+    return;
+  }
+  if (recoverInProgress) {
+    return;
+  }
+
+  const iface = detectVpnInterface();
+  if (!iface || !iface.startsWith('ppp')) {
+    return;
+  }
+
+  const targets = getIpsecKeepaliveTargets();
+  if (targets.length === 0) {
+    return;
+  }
+
+  const results = await Promise.all(
+    targets.map((target) => probeTcpTarget(target.host, target.port, IPSEC_KEEPALIVE_TIMEOUT_MS))
+  );
+  const failed = results.some((ok) => !ok);
+
+  if (failed && !state.ipsec.keepaliveFailing) {
+    state.ipsec.keepaliveFailing = true;
+    log(`IPsec keepalive probe failed for one or more targets: ${targets.map((t) => `${t.host}:${t.port}`).join(', ')}`);
+    return;
+  }
+
+  if (!failed && state.ipsec.keepaliveFailing) {
+    state.ipsec.keepaliveFailing = false;
+    log('IPsec keepalive probe recovered');
+  }
+}
+
+function stopIpsecKeepalive() {
+  if (ipsecKeepaliveTimer) {
+    clearInterval(ipsecKeepaliveTimer);
+    ipsecKeepaliveTimer = null;
+  }
+}
+
+function startIpsecKeepalive() {
+  if (VPN_TYPE !== 'IPSEC' || !IPSEC_KEEPALIVE_ENABLED) {
+    return;
+  }
+  if (ipsecKeepaliveTimer) {
+    return;
+  }
+
+  ipsecKeepaliveTimer = setInterval(() => {
+    runIpsecKeepaliveTick().catch((error) => log(`ipsec keepalive error: ${error.message}`));
+  }, IPSEC_KEEPALIVE_INTERVAL_MS);
+}
+
 function isIpv4Address(value) {
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(String(value || '').trim());
 }
@@ -774,6 +873,8 @@ function buildOpenvpnStartupDiagnostics() {
 }
 
 function stopIpsecProcesses() {
+  stopIpsecKeepalive();
+
   try {
     runSafe('sh', ['-lc', "printf 'd vpn-lac\n' > /var/run/xl2tpd/l2tp-control"]);
   } catch {}
@@ -997,6 +1098,7 @@ async function configureIpsec() {
   applyBuiltInIptablesForIpsec('ppp0');
   applyCustomFirewall();
   applyPortForwarding('ppp0');
+  startIpsecKeepalive();
 
   if (files.dnsServers.length > 0) {
     log(`DNS servers requested but not applied automatically inside the container: ${files.dnsServers.join(', ')}`);
@@ -1199,6 +1301,7 @@ app.post('/disconnect', (req, res) => {
   }
   if (VPN_TYPE === 'OPENVPN') stopOpenvpnProcess();
   if (VPN_TYPE === 'IPSEC') stopIpsecProcesses();
+  stopIpsecKeepalive();
   cleanupNetworking();
 
   state.status = 'STOPPED';

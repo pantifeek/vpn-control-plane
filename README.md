@@ -13,6 +13,7 @@
 - для `IPSEC` реализован runtime для `L2TP/IPsec PSK` через `strongSwan + xl2tpd + pppd`
 - можно настраивать `Port Forwarding`: публикацию порта на хосте с пробросом в адрес/порт внутри VPN
 - для `IPSEC` при активном `Port Forwarding` runtime автоматически добавляет маршруты `/32` к целевым `targetAddress` через `ppp0`
+- для `IPSEC` при активном `Port Forwarding` runtime выполняет встроенный TCP keepalive к `targetAddress:targetPort`, чтобы снижать риск idle-timeout у L2TP
 - при старте `manager-api` восстанавливает сохранённые профили и заново синхронизирует включённые подключения
 - `manager-web` показывает и желаемое состояние профиля, и реальный runtime-статус, с автообновлением и цветовой индикацией
 
@@ -104,6 +105,9 @@ docker compose -f infra/docker/docker-compose.prod.yml up -d --build
 - `RUNTIME_STATUS_TIMEOUT_MS` (по умолчанию: `5000`) — таймаут запросов статуса runtime.
 - `RUNTIME_HEALTH_TIMEOUT_MS` (по умолчанию: `30000`) — таймаут health-check запросов runtime.
 - `RUNTIME_IPSEC_INTERFACE_MISSING_GRACE_MS` (по умолчанию: `300000`) — grace-период (мс) для `IPSEC/L2TP`: сколько ждать при временном исчезновении `ppp` интерфейса перед запуском recovery (`ipsec stop/restart`). Помогает избежать лишних переподключений и обрывов клиентских сессий при кратковременных сбоях канала.
+- `RUNTIME_IPSEC_KEEPALIVE_ENABLED` (по умолчанию: `true`) — включает встроенный keepalive для `IPSEC/L2TP`.
+- `RUNTIME_IPSEC_KEEPALIVE_INTERVAL_MS` (по умолчанию: `20000`) — интервал keepalive-проверок (мс).
+- `RUNTIME_IPSEC_KEEPALIVE_TIMEOUT_MS` (по умолчанию: `3000`) — таймаут одной keepalive-проверки (мс).
 - `RUNTIME_PORT_FORWARDING_MODE`:
   - `HOST` (по умолчанию в коде) — публиковать `Port Forwarding` порты на Docker-хосте.
   - `CONTAINER` (рекомендуется для изолированного доступа) — не публиковать порты на Docker-хосте; порты доступны только из контейнеров, которые могут обратиться к runtime-контейнеру по Docker-сети.
