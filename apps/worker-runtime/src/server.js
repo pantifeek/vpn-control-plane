@@ -21,6 +21,8 @@ const IPSEC_INTERFACE_MISSING_GRACE_MS = Number(process.env.RUNTIME_IPSEC_INTERF
 const IPSEC_KEEPALIVE_ENABLED = String(process.env.RUNTIME_IPSEC_KEEPALIVE_ENABLED || 'true').toLowerCase() !== 'false';
 const IPSEC_KEEPALIVE_INTERVAL_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_INTERVAL_MS || 20000);
 const IPSEC_KEEPALIVE_TIMEOUT_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_TIMEOUT_MS || 3000);
+const IPSEC_KEEPALIVE_FAILURE_THRESHOLD = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_FAILURE_THRESHOLD || 2);
+const IPSEC_FAILFAST_RESET_ENABLED = String(process.env.RUNTIME_IPSEC_FAILFAST_RESET_ENABLED || 'true').toLowerCase() !== 'false';
 
 const app = express();
 app.use(express.json());
@@ -48,6 +50,7 @@ const state = {
   ipsec: {
     interfaceMissingSince: null,
     keepaliveFailing: false,
+    keepaliveFailureCount: 0,
     activeInterface: null,
     lastNetworkReconcileAt: null
   },
@@ -789,6 +792,36 @@ function probeTcpTarget(host, port, timeoutMs) {
   });
 }
 
+function forceResetPortForwardTcpSessions() {
+  if (VPN_TYPE !== 'IPSEC' || !IPSEC_FAILFAST_RESET_ENABLED) {
+    return;
+  }
+
+  const targets = getIpsecKeepaliveTargets();
+  if (targets.length === 0) {
+    return;
+  }
+
+  for (const target of targets) {
+    const port = String(target.port);
+    const rules = [
+      ['iptables', ['-I', 'FORWARD', '1', '-i', 'eth0', '-d', target.host, '-p', 'tcp', '--dport', port, '-j', 'REJECT', '--reject-with', 'tcp-reset']],
+      ['iptables', ['-I', 'FORWARD', '1', '-o', 'eth0', '-s', target.host, '-p', 'tcp', '--sport', port, '-j', 'REJECT', '--reject-with', 'tcp-reset']]
+    ];
+
+    for (const [command, addArgs] of rules) {
+      runSafe(command, addArgs);
+      const delArgs = [...addArgs];
+      const actionIndex = delArgs.findIndex((item) => item === '-I' || item === '-A');
+      if (actionIndex >= 0) delArgs[actionIndex] = '-D';
+      setTimeout(() => runSafe(command, delArgs), 1500);
+    }
+
+    runSafe('conntrack', ['-D', '-p', 'tcp', '-d', target.host, '--dport', port]);
+    runSafe('conntrack', ['-D', '-p', 'tcp', '-s', target.host, '--sport', port]);
+  }
+}
+
 async function runIpsecKeepaliveTick() {
   if (VPN_TYPE !== 'IPSEC' || !IPSEC_KEEPALIVE_ENABLED) {
     return;
@@ -812,13 +845,24 @@ async function runIpsecKeepaliveTick() {
   );
   const failed = results.some((ok) => !ok);
 
-  if (failed && !state.ipsec.keepaliveFailing) {
-    state.ipsec.keepaliveFailing = true;
-    log(`IPsec keepalive probe failed for one or more targets: ${targets.map((t) => `${t.host}:${t.port}`).join(', ')}`);
+  if (failed) {
+    state.ipsec.keepaliveFailureCount += 1;
+    if (!state.ipsec.keepaliveFailing) {
+      state.ipsec.keepaliveFailing = true;
+      log(`IPsec keepalive probe failed for one or more targets: ${targets.map((t) => `${t.host}:${t.port}`).join(', ')}`);
+    }
+
+    if (!recoverInProgress && state.ipsec.keepaliveFailureCount >= Math.max(1, IPSEC_KEEPALIVE_FAILURE_THRESHOLD)) {
+      state.status = 'DEGRADED';
+      state.lastMessage = `IPsec keepalive failed ${state.ipsec.keepaliveFailureCount} time(s), triggering fail-fast recovery`;
+      forceResetPortForwardTcpSessions();
+      await recoverTunnel('ipsec keepalive failed');
+    }
     return;
   }
 
-  if (!failed && state.ipsec.keepaliveFailing) {
+  state.ipsec.keepaliveFailureCount = 0;
+  if (state.ipsec.keepaliveFailing) {
     state.ipsec.keepaliveFailing = false;
     log('IPsec keepalive probe recovered');
   }
@@ -1162,6 +1206,7 @@ async function configureIpsec() {
     if (/Maximum retries exceeded for tunnel/i.test(text)) {
       state.status = 'DEGRADED';
       state.lastMessage = 'L2TP control tunnel timed out, triggering recovery';
+      forceResetPortForwardTcpSessions();
       recoverTunnel('xl2tpd tunnel timeout').catch((error) => log(`recovery after xl2tpd timeout failed: ${error.message}`));
     }
   });
