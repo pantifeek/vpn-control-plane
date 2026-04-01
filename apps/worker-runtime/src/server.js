@@ -37,6 +37,7 @@ const IPSEC_FAILFAST_RESET_ENABLED = String(process.env.RUNTIME_IPSEC_FAILFAST_R
 const IPSEC_XL2TPD_ORPHAN_TUNNEL_THRESHOLD = readNumberEnv('RUNTIME_IPSEC_XL2TPD_ORPHAN_TUNNEL_THRESHOLD', 6);
 const IPSEC_XL2TPD_ORPHAN_TUNNEL_WINDOW_MS = readNumberEnv('RUNTIME_IPSEC_XL2TPD_ORPHAN_TUNNEL_WINDOW_MS', 15000);
 const IPSEC_XL2TPD_ORPHAN_RECOVERY_COOLDOWN_MS = readNumberEnv('RUNTIME_IPSEC_XL2TPD_ORPHAN_RECOVERY_COOLDOWN_MS', 60000);
+const IPSEC_XL2TPD_ORPHAN_RECOVERY_ENABLED = String(process.env.RUNTIME_IPSEC_XL2TPD_ORPHAN_RECOVERY_ENABLED || 'false').toLowerCase() === 'true';
 const IS_IPSEC_TYPE = VPN_TYPE === 'IPSEC' || VPN_TYPE === 'IPSEC.B';
 
 const app = express();
@@ -1081,6 +1082,11 @@ function handleIpsecOrphanTunnelLog(text) {
   state.ipsec.orphanTunnelRecoveryAt = new Date(now).toISOString();
   const hits = state.ipsec.orphanTunnelCount;
   resetIpsecOrphanTunnelState();
+
+  if (!IPSEC_XL2TPD_ORPHAN_RECOVERY_ENABLED) {
+    log(`Detected repeated orphan tunnel ${tunnelId} (${hits} hits), recovery is disabled by config`);
+    return;
+  }
 
   state.status = 'DEGRADED';
   state.lastMessage = `Detected repeated L2TP orphan tunnel ${tunnelId} (${hits} hits), forcing L2TP redial`;
