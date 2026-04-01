@@ -715,6 +715,16 @@ function detectIpsecPppInterface() {
   }
 }
 
+function isInterfaceUp(interfaceName) {
+  try {
+    const line = run('sh', ['-lc', `ip -o link show ${interfaceName} | head -n 1`]).trim();
+    if (!line) return false;
+    return /<[^>]*\bUP\b[^>]*\bLOWER_UP\b[^>]*>/.test(line);
+  } catch {
+    return false;
+  }
+}
+
 function commandSucceeds(command, args, options = {}) {
   const result = spawnSync(command, args, {
     encoding: 'utf8',
@@ -1144,7 +1154,17 @@ async function configureIpsec() {
 
   xl2tpdProcess = spawn('xl2tpd', ['-D'], { stdio: ['ignore', 'pipe', 'pipe'] });
   xl2tpdProcess.stdout.on('data', (chunk) => log(`xl2tpd stdout: ${String(chunk).trim()}`));
-  xl2tpdProcess.stderr.on('data', (chunk) => log(`xl2tpd stderr: ${String(chunk).trim()}`));
+  xl2tpdProcess.stderr.on('data', (chunk) => {
+    const text = String(chunk).trim();
+    if (!text) return;
+    log(`xl2tpd stderr: ${text}`);
+
+    if (/Maximum retries exceeded for tunnel/i.test(text)) {
+      state.status = 'DEGRADED';
+      state.lastMessage = 'L2TP control tunnel timed out, triggering recovery';
+      recoverTunnel('xl2tpd tunnel timeout').catch((error) => log(`recovery after xl2tpd timeout failed: ${error.message}`));
+    }
+  });
   xl2tpdProcess.on('exit', (code, signal) => {
     log(`xl2tpd exited with code=${code} signal=${signal}`);
     if (state.status !== 'STOPPED' && !recoverInProgress) {
@@ -1258,7 +1278,7 @@ async function monitorOpenvpn() {
 
 async function monitorIpsec() {
   const iface = detectIpsecPppInterface();
-  if (!iface) {
+  if (!iface || !isInterfaceUp(iface)) {
     const now = Date.now();
     if (!state.ipsec.interfaceMissingSince) {
       state.ipsec.interfaceMissingSince = new Date(now).toISOString();
