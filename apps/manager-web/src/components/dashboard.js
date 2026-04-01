@@ -7,6 +7,7 @@ const REFRESH_INTERVAL_MS = 5000;
 const DEFAULT_PORTS = {
   OPENVPN: '1194',
   IPSEC: '500',
+  'IPSEC.B': '500',
   WIREGUARD: '51820'
 };
 const DEFAULT_OPENVPN_KEY_DIRECTION = '1';
@@ -14,6 +15,7 @@ const DEFAULT_WIREGUARD_ALLOWED_IPS = '0.0.0.0/0';
 const DEFAULT_WIREGUARD_KEEPALIVE = '25';
 const DEFAULT_IPSEC_MTU = '1410';
 const DEFAULT_IPSEC_MRU = '1410';
+const IPSEC_TYPES = ['IPSEC', 'IPSEC.B'];
 
 function parseOpenvpnEndpoint(configText) {
   const lines = String(configText || '')
@@ -635,7 +637,7 @@ export default function Dashboard() {
       };
     }
 
-    if (form.type === 'IPSEC') {
+    if (IPSEC_TYPES.includes(form.type)) {
       payload.ipsec = {
         ...form.ipsec,
         mtu: form.ipsec.mtu || DEFAULT_IPSEC_MTU,
@@ -789,7 +791,7 @@ export default function Dashboard() {
             </>
           )}
 
-          {form.type === 'IPSEC' && (
+          {IPSEC_TYPES.includes(form.type) && (
             <>
               <input
                 style={{ ...fieldStyle, gridColumn: 'span 4' }}
@@ -1086,7 +1088,7 @@ export default function Dashboard() {
                     </button>
                     {isCreateMenuOpen && (
                       <div style={createMenuStyle}>
-                        {['OPENVPN', 'IPSEC', 'WIREGUARD'].map((type) => (
+                        {['OPENVPN', 'IPSEC', 'IPSEC.B', 'WIREGUARD'].map((type) => (
                           <button
                             key={type}
                             type="button"

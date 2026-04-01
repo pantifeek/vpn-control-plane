@@ -18,6 +18,7 @@ services:
       RUNTIME_PORT: 8080
       RUNTIME_IMAGE_OPENVPN: ${RUNTIME_IMAGE_OPENVPN:-vpn-runtime-openvpn:prod}
       RUNTIME_IMAGE_IPSEC: ${RUNTIME_IMAGE_IPSEC:-vpn-runtime-ipsec:prod}
+      RUNTIME_IMAGE_IPSEC_B: ${RUNTIME_IMAGE_IPSEC_B:-vpn-runtime-ipsec-b:prod}
       RUNTIME_IMAGE_WIREGUARD: ${RUNTIME_IMAGE_WIREGUARD:-vpn-runtime-wireguard:prod}
       RUNTIME_STATUS_TIMEOUT_MS: ${RUNTIME_STATUS_TIMEOUT_MS:-5000}
       RUNTIME_HEALTH_TIMEOUT_MS: ${RUNTIME_HEALTH_TIMEOUT_MS:-30000}
@@ -74,6 +75,15 @@ services:
     build:
       context: ../..
       dockerfile: infra/docker/runtime/ipsec.Dockerfile
+    entrypoint: ["/bin/sh", "-c", "exit 0"]
+    restart: "no"
+
+  vpn-runtime-ipsec-b:
+    image: vpn-runtime-ipsec-b:prod
+    pull_policy: never
+    build:
+      context: ../..
+      dockerfile: infra/docker/runtime/ipsec-b.Dockerfile
     entrypoint: ["/bin/sh", "-c", "exit 0"]
     restart: "no"
 

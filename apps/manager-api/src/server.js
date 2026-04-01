@@ -17,8 +17,13 @@ const RUNTIME_PORT_FORWARDING_MODE = String(process.env.RUNTIME_PORT_FORWARDING_
 const RUNTIME_IMAGES = {
   OPENVPN: process.env.RUNTIME_IMAGE_OPENVPN || 'vpn-runtime-openvpn:local',
   IPSEC: process.env.RUNTIME_IMAGE_IPSEC || 'vpn-runtime-ipsec:local',
+  'IPSEC.B': process.env.RUNTIME_IMAGE_IPSEC_B || 'vpn-runtime-ipsec-b:local',
   WIREGUARD: process.env.RUNTIME_IMAGE_WIREGUARD || 'vpn-runtime-wireguard:local'
 };
+
+function isIpsecProfileType(type) {
+  return type === 'IPSEC' || type === 'IPSEC.B';
+}
 
 const docker = new Docker({ socketPath: DOCKER_SOCKET_PATH });
 
@@ -310,7 +315,7 @@ function sanitizeName(value) {
 }
 
 function getRuntimeContainerName(profile) {
-  return `vpn-runtime-${profile.type.toLowerCase()}-${sanitizeName(profile.id)}`;
+  return `vpn-runtime-${sanitizeName(profile.type)}-${sanitizeName(profile.id)}`;
 }
 
 function buildRuntimeUrl(containerName) {
@@ -561,7 +566,7 @@ function normalizeProfile(raw) {
     runtimeContainerName: raw?.runtimeContainerName ? String(raw.runtimeContainerName) : null,
     runtimeImage: raw?.runtimeImage || RUNTIME_IMAGES[type] || null,
     openvpn: type === 'OPENVPN' ? sanitizeOpenvpnConfig(raw?.openvpn) : null,
-    ipsec: type === 'IPSEC' ? sanitizeIpsecConfig(raw?.ipsec) : null,
+    ipsec: isIpsecProfileType(type) ? sanitizeIpsecConfig(raw?.ipsec) : null,
     wireguard: type === 'WIREGUARD' ? sanitizeWireguardConfig(raw?.wireguard) : null,
     firewall: sanitizeFirewallConfig(raw?.firewall),
     portForwarding: sanitizePortForwardingConfig(raw?.portForwarding)
@@ -613,10 +618,10 @@ function validateProfileInput(body, isPatch = false) {
     if (!wireguard?.allowedIps) errors.push('wireguard.allowedIps is required for WIREGUARD');
   }
 
-  if (effectiveType === 'IPSEC') {
+  if (isIpsecProfileType(effectiveType)) {
     const ipsec = sanitizeIpsecConfig(body.ipsec);
-    if (!ipsec?.preSharedKey) errors.push('ipsec.preSharedKey is required for IPSEC');
-    if (!ipsec?.password) errors.push('ipsec.password is required for IPSEC');
+    if (!ipsec?.preSharedKey) errors.push('ipsec.preSharedKey is required for IPSEC/IPSEC.B');
+    if (!ipsec?.password) errors.push('ipsec.password is required for IPSEC/IPSEC.B');
   }
 
   errors.push(...validateFirewallConfig(body.firewall));
@@ -652,7 +657,7 @@ function toDto(profile) {
           }
         : null,
     ipsec:
-      profile.type === 'IPSEC'
+      isIpsecProfileType(profile.type)
         ? {
             userId: profile.ipsec?.userId || profile.username || '',
             hasPreSharedKey: Boolean(profile.ipsec?.preSharedKey),
@@ -700,7 +705,7 @@ function getRuntimeEnv(profile) {
     env.push(`OPENVPN_KEY_DIRECTION=${profile.openvpn.keyDirection || ''}`);
   }
 
-  if (profile.type === 'IPSEC' && profile.ipsec) {
+  if (isIpsecProfileType(profile.type) && profile.ipsec) {
     env.push(`IPSEC_PSK=${profile.ipsec.preSharedKey}`);
     env.push(`IPSEC_PASSWORD=${profile.ipsec.password}`);
     env.push(`IPSEC_USER_ID=${profile.ipsec.userId || profile.username || ''}`);
@@ -884,7 +889,7 @@ async function createRuntimeContainer(profile) {
     }
   };
 
-  if (profile.type === 'IPSEC') {
+  if (isIpsecProfileType(profile.type)) {
     hostConfig.Privileged = true;
     hostConfig.CapAdd = Array.from(new Set([...(hostConfig.CapAdd || []), 'NET_ADMIN', 'NET_RAW', 'SYS_MODULE']));
     const modulesPath = process.env.RUNTIME_MODULES_PATH || '/lib/modules';
@@ -1152,7 +1157,7 @@ app.post('/vpn-profiles', async (req, res) => {
     runtimeContainerName: null,
     runtimeImage: RUNTIME_IMAGES[type],
     openvpn: type === 'OPENVPN' ? sanitizeOpenvpnConfig(req.body.openvpn) : null,
-    ipsec: type === 'IPSEC' ? sanitizeIpsecConfig(req.body.ipsec) : null,
+    ipsec: isIpsecProfileType(type) ? sanitizeIpsecConfig(req.body.ipsec) : null,
     wireguard: type === 'WIREGUARD' ? sanitizeWireguardConfig(req.body.wireguard) : null,
     firewall: sanitizeFirewallConfig(req.body.firewall),
     portForwarding: sanitizePortForwardingConfig(req.body.portForwarding)
@@ -1199,7 +1204,7 @@ app.patch('/vpn-profiles/:id', async (req, res) => {
   if (port !== undefined) profile.port = Number(port);
   if (username !== undefined) profile.username = String(username || '').trim();
   profile.openvpn = profile.type === 'OPENVPN' ? mergeOpenvpnConfig(profile.openvpn, effectiveBody.openvpn) : null;
-  profile.ipsec = profile.type === 'IPSEC' ? mergeIpsecConfig(profile.ipsec, effectiveBody.ipsec) : null;
+  profile.ipsec = isIpsecProfileType(profile.type) ? mergeIpsecConfig(profile.ipsec, effectiveBody.ipsec) : null;
   profile.wireguard = profile.type === 'WIREGUARD' ? mergeWireguardConfig(profile.wireguard, effectiveBody.wireguard) : null;
   profile.firewall = sanitizeFirewallConfig(req.body.firewall !== undefined ? req.body.firewall : profile.firewall);
   profile.portForwarding = sanitizePortForwardingConfig(

@@ -26,13 +26,14 @@ const IPSEC_KEEPALIVE_SOFT_RESET_THRESHOLD = Number(process.env.RUNTIME_IPSEC_KE
 const IPSEC_KEEPALIVE_L2TP_REDIAL_THRESHOLD = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_L2TP_REDIAL_THRESHOLD || 2);
 const IPSEC_KEEPALIVE_MIN_RECOVERY_INTERVAL_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_MIN_RECOVERY_INTERVAL_MS || 180000);
 const IPSEC_FAILFAST_RESET_ENABLED = String(process.env.RUNTIME_IPSEC_FAILFAST_RESET_ENABLED || 'true').toLowerCase() !== 'false';
+const IS_IPSEC_TYPE = VPN_TYPE === 'IPSEC' || VPN_TYPE === 'IPSEC.B';
 
 const app = express();
 app.use(express.json());
 
 const state = {
-  status: VPN_TYPE === 'OPENVPN' || VPN_TYPE === 'WIREGUARD' || VPN_TYPE === 'IPSEC' ? 'STARTING' : 'CONNECTED',
-  connectedAt: VPN_TYPE === 'OPENVPN' || VPN_TYPE === 'WIREGUARD' || VPN_TYPE === 'IPSEC' ? null : new Date().toISOString(),
+  status: VPN_TYPE === 'OPENVPN' || VPN_TYPE === 'WIREGUARD' || IS_IPSEC_TYPE ? 'STARTING' : 'CONNECTED',
+  connectedAt: VPN_TYPE === 'OPENVPN' || VPN_TYPE === 'WIREGUARD' || IS_IPSEC_TYPE ? null : new Date().toISOString(),
   lastHandshakeAt: null,
   firewallStatus: 'NOT_CONFIGURED',
   firewallMessage: null,
@@ -803,7 +804,7 @@ function probeTcpTarget(host, port, timeoutMs) {
 }
 
 function forceResetPortForwardTcpSessions() {
-  if (VPN_TYPE !== 'IPSEC' || !IPSEC_FAILFAST_RESET_ENABLED) {
+  if (!IS_IPSEC_TYPE || !IPSEC_FAILFAST_RESET_ENABLED) {
     return;
   }
 
@@ -845,7 +846,7 @@ function getIpsecResetGateRules() {
 }
 
 function setIpsecClientResetGate(enabled) {
-  if (VPN_TYPE !== 'IPSEC') return;
+  if (!IS_IPSEC_TYPE) return;
   if (enabled === state.ipsec.clientResetGateEnabled) return;
 
   const rules = getIpsecResetGateRules();
@@ -871,7 +872,7 @@ function setIpsecClientResetGate(enabled) {
 }
 
 async function redialL2tpSession(reason = 'unspecified') {
-  if (VPN_TYPE !== 'IPSEC' || !ipsecRuntime?.controlPath || !ipsecRuntime?.lacName || state.ipsec.redialInProgress) {
+  if (!IS_IPSEC_TYPE || !ipsecRuntime?.controlPath || !ipsecRuntime?.lacName || state.ipsec.redialInProgress) {
     return false;
   }
 
@@ -893,7 +894,7 @@ async function redialL2tpSession(reason = 'unspecified') {
 }
 
 async function runIpsecKeepaliveTick() {
-  if (VPN_TYPE !== 'IPSEC' || !IPSEC_KEEPALIVE_ENABLED) {
+  if (!IS_IPSEC_TYPE || !IPSEC_KEEPALIVE_ENABLED) {
     return;
   }
   if (recoverInProgress) {
@@ -993,7 +994,7 @@ function stopIpsecKeepalive() {
 }
 
 function startIpsecKeepalive() {
-  if (VPN_TYPE !== 'IPSEC' || !IPSEC_KEEPALIVE_ENABLED) {
+  if (!IS_IPSEC_TYPE || !IPSEC_KEEPALIVE_ENABLED) {
     return;
   }
   if (ipsecKeepaliveTimer) {
@@ -1364,10 +1365,10 @@ async function recoverTunnel(reason) {
   try {
     cleanupNetworking();
     if (VPN_TYPE === 'OPENVPN') stopOpenvpnProcess();
-    if (VPN_TYPE === 'IPSEC') stopIpsecProcesses();
+    if (IS_IPSEC_TYPE) stopIpsecProcesses();
     if (VPN_TYPE === 'WIREGUARD') await configureWireguard();
     if (VPN_TYPE === 'OPENVPN') await configureOpenvpn();
-    if (VPN_TYPE === 'IPSEC') await configureIpsec();
+    if (IS_IPSEC_TYPE) await configureIpsec();
   } catch (error) {
     state.status = 'ERROR';
     state.startupError = error.message;
@@ -1491,7 +1492,7 @@ function startWatchdog() {
       ? monitorWireguard
       : VPN_TYPE === 'OPENVPN'
         ? monitorOpenvpn
-        : VPN_TYPE === 'IPSEC'
+        : IS_IPSEC_TYPE
           ? monitorIpsec
           : null;
     if (!task) return;
@@ -1512,7 +1513,7 @@ async function bootstrap() {
     return;
   }
 
-  if (VPN_TYPE === 'IPSEC') {
+  if (IS_IPSEC_TYPE) {
     await configureIpsec();
     startWatchdog();
     return;
@@ -1551,7 +1552,7 @@ app.post('/disconnect', (req, res) => {
     watchdogTimer = null;
   }
   if (VPN_TYPE === 'OPENVPN') stopOpenvpnProcess();
-  if (VPN_TYPE === 'IPSEC') stopIpsecProcesses();
+  if (IS_IPSEC_TYPE) stopIpsecProcesses();
   stopIpsecKeepalive();
   cleanupNetworking();
 

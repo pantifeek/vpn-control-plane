@@ -7,6 +7,7 @@ docker compose -f $composeFile build `
   manager-web `
   vpn-runtime-openvpn `
   vpn-runtime-ipsec `
+  vpn-runtime-ipsec-b `
   vpn-runtime-wireguard
 
 docker compose -f $composeFile up manager-api manager-web

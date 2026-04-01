@@ -79,7 +79,7 @@
  * @typedef {Object} VpnProfile
  * @property {string} id
  * @property {string} name
- * @property {'OPENVPN'|'IPSEC'|'WIREGUARD'} type
+ * @property {'OPENVPN'|'IPSEC'|'IPSEC.B'|'WIREGUARD'} type
  * @property {string} host
  * @property {number} port
  * @property {string} username
@@ -97,7 +97,7 @@
  * @typedef {Object} VpnInstance
  * @property {string} profileId
  * @property {string} name
- * @property {'OPENVPN'|'IPSEC'|'WIREGUARD'} type
+ * @property {'OPENVPN'|'IPSEC'|'IPSEC.B'|'WIREGUARD'} type
  * @property {'STOPPED'|'CONNECTED'|'ERROR'} managerStatus
  * @property {string|null} runtimeContainerName
  * @property {string|null} runtimeImage

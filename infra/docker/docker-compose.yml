@@ -17,6 +17,7 @@ services:
       RUNTIME_PORT: 8080
       RUNTIME_IMAGE_OPENVPN: vpn-runtime-openvpn:local
       RUNTIME_IMAGE_IPSEC: vpn-runtime-ipsec:local
+      RUNTIME_IMAGE_IPSEC_B: vpn-runtime-ipsec-b:local
       RUNTIME_IMAGE_WIREGUARD: vpn-runtime-wireguard:local
       RUNTIME_IPSEC_INTERFACE_MISSING_GRACE_MS: ${RUNTIME_IPSEC_INTERFACE_MISSING_GRACE_MS:-300000}
       RUNTIME_IPSEC_KEEPALIVE_ENABLED: ${RUNTIME_IPSEC_KEEPALIVE_ENABLED:-true}
@@ -64,6 +65,14 @@ services:
     build:
       context: ../..
       dockerfile: infra/docker/runtime/ipsec.Dockerfile
+    profiles:
+      - runtime-images
+
+  vpn-runtime-ipsec-b:
+    image: vpn-runtime-ipsec-b:local
+    build:
+      context: ../..
+      dockerfile: infra/docker/runtime/ipsec-b.Dockerfile
     profiles:
       - runtime-images
 
