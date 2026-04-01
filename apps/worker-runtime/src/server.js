@@ -1032,9 +1032,17 @@ function ensureIpsecRoutesForPortForwarding(vpnInterface) {
     const routeInfo = spawnSync('ip', ['route', 'get', targetIp], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     const hasExpectedInterface = routeInfo.status === 0 && new RegExp(`\\bdev\\s+${vpnInterface}\\b`).test(routeInfo.stdout || '');
     if (!hasExpectedInterface) {
-      run('ip', ['route', 'replace', targetCidr, 'dev', vpnInterface]);
-      registerCleanup('ip', ['route', 'del', targetCidr, 'dev', vpnInterface]);
-      log(`Ensured IPsec route ${targetCidr} via ${vpnInterface}`);
+      try {
+        run('ip', ['route', 'replace', targetCidr, 'dev', vpnInterface]);
+        registerCleanup('ip', ['route', 'del', targetCidr, 'dev', vpnInterface]);
+        log(`Ensured IPsec route ${targetCidr} via ${vpnInterface}`);
+      } catch (error) {
+        if (/Device for nexthop is not up|Cannot find device|No such device/i.test(String(error.message || ''))) {
+          log(`Deferring route ${targetCidr} via ${vpnInterface}: interface is not ready yet`);
+          continue;
+        }
+        throw error;
+      }
     }
   }
 }
@@ -1283,10 +1291,12 @@ async function waitForPppInterface(timeoutMs = 30000) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     const iface = detectIpsecPppInterface();
-    if (iface) return iface;
+    if (iface && isInterfaceUp(iface)) {
+      return iface;
+    }
     await sleep(1000);
   }
-  throw new Error(`PPP interface did not appear within ${timeoutMs}ms`);
+  throw new Error(`PPP interface did not become UP within ${timeoutMs}ms`);
 }
 
 async function configureIpsec() {
