@@ -23,6 +23,7 @@ const IPSEC_KEEPALIVE_INTERVAL_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_I
 const IPSEC_KEEPALIVE_TIMEOUT_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_TIMEOUT_MS || 3000);
 const IPSEC_KEEPALIVE_FAILURE_THRESHOLD = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_FAILURE_THRESHOLD || 6);
 const IPSEC_KEEPALIVE_SOFT_RESET_THRESHOLD = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_SOFT_RESET_THRESHOLD || 2);
+const IPSEC_KEEPALIVE_L2TP_REDIAL_THRESHOLD = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_L2TP_REDIAL_THRESHOLD || 3);
 const IPSEC_KEEPALIVE_MIN_RECOVERY_INTERVAL_MS = Number(process.env.RUNTIME_IPSEC_KEEPALIVE_MIN_RECOVERY_INTERVAL_MS || 180000);
 const IPSEC_FAILFAST_RESET_ENABLED = String(process.env.RUNTIME_IPSEC_FAILFAST_RESET_ENABLED || 'true').toLowerCase() !== 'false';
 
@@ -54,7 +55,9 @@ const state = {
     keepaliveFailing: false,
     keepaliveFailureCount: 0,
     keepaliveSoftResetAppliedAtFailure: 0,
+    keepaliveL2tpRedialAppliedAtFailure: 0,
     lastRecoveryAt: null,
+    lastL2tpRedialAt: null,
     activeInterface: null,
     lastNetworkReconcileAt: null
   },
@@ -828,6 +831,24 @@ function forceResetPortForwardTcpSessions() {
   }
 }
 
+async function redialL2tpSession(reason = 'unspecified') {
+  if (VPN_TYPE !== 'IPSEC' || !ipsecRuntime?.controlPath || !ipsecRuntime?.lacName) {
+    return false;
+  }
+
+  try {
+    log(`Attempting L2TP session redial: ${reason}`);
+    run('sh', ['-lc', `printf 'd ${ipsecRuntime.lacName}\n' > ${ipsecRuntime.controlPath}`]);
+  } catch (error) {
+    log(`L2TP disconnect command warning: ${error.message}`);
+  }
+
+  await sleep(800);
+  run('sh', ['-lc', `printf 'c ${ipsecRuntime.lacName}\n' > ${ipsecRuntime.controlPath}`]);
+  state.ipsec.lastL2tpRedialAt = new Date().toISOString();
+  return true;
+}
+
 async function runIpsecKeepaliveTick() {
   if (VPN_TYPE !== 'IPSEC' || !IPSEC_KEEPALIVE_ENABLED) {
     return;
@@ -866,6 +887,19 @@ async function runIpsecKeepaliveTick() {
       forceResetPortForwardTcpSessions();
     }
 
+    if (
+      !recoverInProgress
+      && state.ipsec.keepaliveFailureCount >= Math.max(1, IPSEC_KEEPALIVE_L2TP_REDIAL_THRESHOLD)
+      && state.ipsec.keepaliveL2tpRedialAppliedAtFailure !== state.ipsec.keepaliveFailureCount
+    ) {
+      state.ipsec.keepaliveL2tpRedialAppliedAtFailure = state.ipsec.keepaliveFailureCount;
+      try {
+        await redialL2tpSession(`keepalive failed ${state.ipsec.keepaliveFailureCount} time(s)`);
+      } catch (error) {
+        log(`L2TP redial warning: ${error.message}`);
+      }
+    }
+
     if (!recoverInProgress && state.ipsec.keepaliveFailureCount >= Math.max(1, IPSEC_KEEPALIVE_FAILURE_THRESHOLD)) {
       const now = Date.now();
       const lastRecoveryAt = state.ipsec.lastRecoveryAt ? new Date(state.ipsec.lastRecoveryAt).getTime() : 0;
@@ -885,6 +919,7 @@ async function runIpsecKeepaliveTick() {
 
   state.ipsec.keepaliveFailureCount = 0;
   state.ipsec.keepaliveSoftResetAppliedAtFailure = 0;
+  state.ipsec.keepaliveL2tpRedialAppliedAtFailure = 0;
   if (state.ipsec.keepaliveFailing) {
     state.ipsec.keepaliveFailing = false;
     log('IPsec keepalive probe recovered');
