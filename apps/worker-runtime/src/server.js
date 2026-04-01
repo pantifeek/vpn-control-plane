@@ -804,21 +804,22 @@ function forceResetPortForwardTcpSessions() {
 
   for (const target of targets) {
     const port = String(target.port);
-    const rules = [
-      ['iptables', ['-I', 'FORWARD', '1', '-i', 'eth0', '-d', target.host, '-p', 'tcp', '--dport', port, '-j', 'REJECT', '--reject-with', 'tcp-reset']],
-      ['iptables', ['-I', 'FORWARD', '1', '-o', 'eth0', '-s', target.host, '-p', 'tcp', '--sport', port, '-j', 'REJECT', '--reject-with', 'tcp-reset']]
+    const tempRules = [
+      ['-I', 'FORWARD', '1', '-i', 'eth0', '-d', target.host, '-p', 'tcp', '--dport', port, '-j', 'REJECT', '--reject-with', 'tcp-reset'],
+      ['-I', 'FORWARD', '1', '-o', 'eth0', '-s', target.host, '-p', 'tcp', '--sport', port, '-j', 'REJECT', '--reject-with', 'tcp-reset']
     ];
 
-    for (const [command, addArgs] of rules) {
-      runSafe(command, addArgs);
-      const delArgs = [...addArgs];
-      const actionIndex = delArgs.findIndex((item) => item === '-I' || item === '-A');
-      if (actionIndex >= 0) delArgs[actionIndex] = '-D';
-      setTimeout(() => runSafe(command, delArgs), 1500);
+    for (const addArgs of tempRules) {
+      runSafe('iptables', addArgs);
+      // Deleting an inserted rule must not include its insertion index.
+      const delArgs = ['-D', 'FORWARD', ...addArgs.slice(3)];
+      setTimeout(() => runSafe('iptables', delArgs), 1500);
     }
 
-    runSafe('conntrack', ['-D', '-p', 'tcp', '-d', target.host, '--dport', port]);
-    runSafe('conntrack', ['-D', '-p', 'tcp', '-s', target.host, '--sport', port]);
+    if (commandSucceeds('sh', ['-lc', 'command -v conntrack >/dev/null 2>&1'])) {
+      runSafe('conntrack', ['-D', '-p', 'tcp', '-d', target.host, '--dport', port]);
+      runSafe('conntrack', ['-D', '-p', 'tcp', '-s', target.host, '--sport', port]);
+    }
   }
 }
 
