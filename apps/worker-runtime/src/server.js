@@ -925,6 +925,19 @@ async function redialL2tpSession(reason = 'unspecified') {
   }
 }
 
+function isIpsecTransportHealthy() {
+  if (!IS_IPSEC_TYPE) {
+    return false;
+  }
+
+  const iface = detectIpsecPppInterface();
+  if (!iface || !isInterfaceUp(iface)) {
+    return false;
+  }
+
+  return commandSucceeds('ipsec', ['status', 'l2tp-psk']);
+}
+
 async function runIpsecKeepaliveTick() {
   if (!IS_IPSEC_TYPE || !IPSEC_KEEPALIVE_ENABLED) {
     return;
@@ -949,6 +962,7 @@ async function runIpsecKeepaliveTick() {
   const failed = results.some((ok) => !ok);
 
   if (failed) {
+    const ipsecTransportHealthy = isIpsecTransportHealthy();
     state.ipsec.keepaliveFailureCount += 1;
     if (!state.ipsec.keepaliveFailing) {
       state.ipsec.keepaliveFailing = true;
@@ -966,6 +980,7 @@ async function runIpsecKeepaliveTick() {
 
     if (
       !recoverInProgress
+      && !ipsecTransportHealthy
       && state.ipsec.keepaliveFailureCount >= Math.max(1, IPSEC_KEEPALIVE_L2TP_REDIAL_THRESHOLD)
       && state.ipsec.keepaliveL2tpRedialAppliedAtFailure !== state.ipsec.keepaliveFailureCount
     ) {
@@ -989,6 +1004,12 @@ async function runIpsecKeepaliveTick() {
       } catch (error) {
         log(`L2TP redial warning: ${error.message}`);
       }
+    }
+
+    if (ipsecTransportHealthy) {
+      state.status = 'DEGRADED';
+      state.lastMessage = `IPsec transport is up, but keepalive target(s) unreachable (${state.ipsec.keepaliveFailureCount} failed probe(s))`;
+      return;
     }
 
     if (!recoverInProgress && state.ipsec.keepaliveFailureCount >= Math.max(1, IPSEC_KEEPALIVE_FAILURE_THRESHOLD)) {
