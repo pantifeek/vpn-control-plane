@@ -752,6 +752,7 @@ function buildIpsecRuntimeFiles() {
       'config setup',
       '',
       `conn ${connectionName}`,
+      '  ikev2=never',
       '  authby=secret',
       '  pfs=no',
       '  auto=add',
