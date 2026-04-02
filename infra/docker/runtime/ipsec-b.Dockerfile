@@ -1,4 +1,4 @@
-FROM alpine:3.20
+FROM alpine:3.18
 
 WORKDIR /app
 
@@ -23,7 +23,7 @@ RUN apk add --no-cache \
     && touch /var/run/xl2tpd/l2tp-control
 
 COPY apps/worker-runtime/package.json ./package.json
-RUN npm install --omit=dev
+RUN npm install
 
 COPY apps/worker-runtime/src ./src
 

@@ -283,15 +283,6 @@ function runIpsecRereadAll(connectionName = '') {
       log(`ipsec rereadall fallback to auto --rereadall due to: ${error.message}`);
       runSafe('ipsec', ['auto', '--rereadall']);
     }
-    if (connectionName) {
-      // libreswan does not always load conn stanzas on rereadall in this container,
-      // so try explicit add. Keep it best-effort to survive buggy addconn builds.
-      try {
-        run('ipsec', ['auto', '--add', connectionName]);
-      } catch (error) {
-        log(`ipsec auto --add warning: ${error.message}`);
-      }
-    }
     runSafe('ipsec', ['whack', '--listen']);
     return;
   }
@@ -350,6 +341,10 @@ function checkIpsecConnectionStatus(connectionName) {
   }
 
   return commandSucceeds('ipsec', ['status', connectionName]);
+}
+
+function getDefaultIpsecConnectionName() {
+  return getIpsecImplementation() === 'libreswan' ? 'L2TP-PSK' : 'l2tp-psk';
 }
 
 function enableIpForwarding() {
@@ -755,7 +750,7 @@ function buildOpenvpnConfigFiles() {
 function buildIpsecRuntimeFiles() {
   const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipsec-runtime-'));
   const ipsecImpl = getIpsecImplementation();
-  const connectionName = 'l2tp-psk';
+  const connectionName = ipsecImpl === 'libreswan' ? 'L2TP-PSK' : 'l2tp-psk';
   const lacName = 'vpn-lac';
   const pppOptionsPath = '/etc/ppp/options.l2tpd.client';
   const chapSecretsPath = '/etc/ppp/chap-secrets';
@@ -787,20 +782,19 @@ function buildIpsecRuntimeFiles() {
       'config setup',
       '',
       `conn ${connectionName}`,
-      '  ikev2=never',
       '  authby=secret',
       '  pfs=no',
       '  auto=add',
       '  rekey=no',
-      '  keyingtries=%forever',
-      '  type=transport',
       '  left=%defaultroute',
+      '  type=transport',
       '  leftprotoport=17/1701',
-      `  right=${serverHost}`,
       '  rightprotoport=17/1701',
       '  dpddelay=15',
       '  dpdtimeout=30',
+      '  dpdaction=clear',
       '  ike=aes-sha1-modp1024',
+      `  right=${serverHost}`,
       ''
     ].join('\n')
     : [
@@ -1110,7 +1104,7 @@ function isIpsecTransportHealthy() {
     return false;
   }
 
-  const connName = ipsecRuntime?.connectionName || 'l2tp-psk';
+  const connName = ipsecRuntime?.connectionName || getDefaultIpsecConnectionName();
   return checkIpsecConnectionStatus(connName);
 }
 
@@ -1783,7 +1777,7 @@ async function monitorIpsec() {
   state.ipsec.interfaceMissingSince = null;
   state.ipsec.activeInterface = iface;
 
-  const connName = ipsecRuntime?.connectionName || 'l2tp-psk';
+  const connName = ipsecRuntime?.connectionName || getDefaultIpsecConnectionName();
   if (!checkIpsecConnectionStatus(connName)) {
     state.status = 'ERROR';
     state.lastMessage = `IPsec status check failed for ${connName} (${getIpsecImplementation()})`;
