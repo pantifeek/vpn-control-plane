@@ -278,9 +278,19 @@ function runIpsecStatusAll() {
 function runIpsecRereadAll(connectionName = '') {
   if (getIpsecImplementation() === 'libreswan') {
     if (connectionName) {
-      runSafe('ipsec', ['auto', '--add', connectionName]);
+      try {
+        run('ipsec', ['add', connectionName]);
+      } catch (error) {
+        log(`ipsec add fallback to auto --add due to: ${error.message}`);
+        runSafe('ipsec', ['auto', '--add', connectionName]);
+      }
     } else {
-      runSafe('ipsec', ['auto', '--rereadall']);
+      try {
+        run('ipsec', ['rereadall']);
+      } catch (error) {
+        log(`ipsec rereadall fallback to auto --rereadall due to: ${error.message}`);
+        runSafe('ipsec', ['auto', '--rereadall']);
+      }
     }
     runSafe('ipsec', ['whack', '--listen']);
     return;
@@ -291,12 +301,30 @@ function runIpsecRereadAll(connectionName = '') {
 function runIpsecUpConnection(connectionName) {
   if (getIpsecImplementation() === 'libreswan') {
     try {
-      run('ipsec', ['auto', '--up', connectionName]);
+      run('ipsec', ['up', connectionName]);
     } catch (error) {
       const msg = String(error.message || '').toLowerCase();
       if (msg.includes('need --listen before --initiate')) {
         runSafe('ipsec', ['whack', '--listen']);
-        run('ipsec', ['auto', '--up', connectionName]);
+        try {
+          run('ipsec', ['up', connectionName]);
+        } catch (retryError) {
+          const retryMsg = String(retryError.message || '').toLowerCase();
+          if (!retryMsg.includes('no connection or alias named')) {
+            throw retryError;
+          }
+          run('ipsec', ['auto', '--up', connectionName]);
+        }
+        return;
+      }
+      if (msg.includes('no connection or alias named')) {
+        runSafe('ipsec', ['whack', '--listen']);
+        try {
+          run('ipsec', ['add', connectionName]);
+        } catch {
+          runSafe('ipsec', ['auto', '--add', connectionName]);
+        }
+        run('ipsec', ['up', connectionName]);
         return;
       }
       throw error;
