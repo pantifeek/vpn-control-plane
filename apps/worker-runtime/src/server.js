@@ -277,12 +277,8 @@ function runIpsecStatusAll() {
 
 function runIpsecRereadAll(connectionName = '') {
   if (getIpsecImplementation() === 'libreswan') {
-    try {
-      run('ipsec', ['rereadall']);
-    } catch (error) {
-      log(`ipsec rereadall fallback to auto --rereadall due to: ${error.message}`);
-      runSafe('ipsec', ['auto', '--rereadall']);
-    }
+    // libreswan 4.x in alpine images does not provide `ipsec rereadall`.
+    runSafe('ipsec', ['auto', '--rereadall']);
     runSafe('ipsec', ['whack', '--listen']);
     return;
   }
@@ -292,50 +288,7 @@ function runIpsecRereadAll(connectionName = '') {
 function runIpsecUpConnection(connectionName) {
   if (getIpsecImplementation() === 'libreswan') {
     runSafe('ipsec', ['whack', '--listen']);
-    try {
-      run('ipsec', ['up', connectionName]);
-    } catch (error) {
-      const msg = String(error.message || '').toLowerCase();
-      if (msg.includes('unknown ipsec command "up"')) {
-        run('ipsec', ['auto', '--up', connectionName]);
-        return;
-      }
-      if (msg.includes('need --listen before --initiate')) {
-        runSafe('ipsec', ['whack', '--listen']);
-        try {
-          run('ipsec', ['up', connectionName]);
-        } catch (retryError) {
-          const retryMsg = String(retryError.message || '').toLowerCase();
-          if (retryMsg.includes('unknown ipsec command "up"')) {
-            run('ipsec', ['auto', '--up', connectionName]);
-            return;
-          }
-          if (!retryMsg.includes('no connection or alias named')) {
-            throw retryError;
-          }
-          run('ipsec', ['auto', '--up', connectionName]);
-        }
-        return;
-      }
-      if (msg.includes('no connection or alias named')) {
-        // On some libreswan builds, `ipsec add/auto --add` can crash.
-        // Prefer reloading configs and retrying `up` directly.
-        runSafe('ipsec', ['rereadall']);
-        runSafe('ipsec', ['whack', '--listen']);
-        try {
-          run('ipsec', ['up', connectionName]);
-        } catch (retryUpError) {
-          const retryUpMsg = String(retryUpError.message || '').toLowerCase();
-          if (retryUpMsg.includes('unknown ipsec command "up"')) {
-            run('ipsec', ['auto', '--up', connectionName]);
-          } else {
-            throw retryUpError;
-          }
-        }
-        return;
-      }
-      throw error;
-    }
+    run('ipsec', ['auto', '--up', connectionName]);
     return;
   }
   run('ipsec', ['up', connectionName]);
