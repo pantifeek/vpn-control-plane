@@ -233,8 +233,11 @@ function runIpsecRestart() {
   if (getIpsecImplementation() === 'libreswan') {
     runSafe('ipsec', ['stop']);
     runSafe('ipsec', ['initnss']);
-    log('run: ipsec start');
-    const startResult = spawnSync('ipsec', ['start'], {
+    runSafe('sh', ['-lc', 'mkdir -p /run/pluto /var/run/pluto']);
+    runSafe('sh', ['-lc', 'rm -f /run/pluto/pluto.pid /var/run/pluto/pluto.pid /run/pluto/pluto.ctl /var/run/pluto/pluto.ctl']);
+
+    log('run: ipsec pluto --stderrlog --config /etc/ipsec.conf');
+    const startResult = spawnSync('ipsec', ['pluto', '--stderrlog', '--config', '/etc/ipsec.conf'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -249,9 +252,9 @@ function runIpsecRestart() {
         || details.includes('already running');
       if (!benign) {
         const output = [startResult.stderr?.trim(), startResult.stdout?.trim()].filter(Boolean).join(' | ');
-        throw new Error(`ipsec start failed with code ${startResult.status}${output ? `: ${output}` : ''}`);
+        throw new Error(`ipsec pluto start failed with code ${startResult.status}${output ? `: ${output}` : ''}`);
       }
-      log('ipsec start returned a benign non-zero status, continuing startup wait');
+      log('ipsec pluto returned a benign non-zero status, continuing startup wait');
     }
     return;
   }
@@ -1331,7 +1334,12 @@ function stopIpsecProcesses() {
     xl2tpdProcess.kill('SIGTERM');
   }
   xl2tpdProcess = null;
-  runSafe('ipsec', ['stop']);
+  if (getIpsecImplementation() === 'libreswan') {
+    runSafe('ipsec', ['stop']);
+    runSafe('sh', ['-lc', 'pkill -TERM -f pluto || true']);
+  } else {
+    runSafe('ipsec', ['stop']);
+  }
   ipsecRuntime = null;
 }
 
@@ -1499,7 +1507,7 @@ async function waitForIpsecStarter(timeoutMs = 15000) {
     }
   }
 
-  throw new Error('strongSwan did not become ready in time');
+  throw new Error('IPsec daemon did not become ready in time');
 }
 
 async function waitForPppInterface(timeoutMs = 30000) {

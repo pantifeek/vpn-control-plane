@@ -18,6 +18,7 @@ RUN apk add --no-cache \
     nodejs \
     npm \
     && mkdir -p /var/run/pluto \
+    && mkdir -p /run/pluto \
     && mkdir -p /var/run/xl2tpd \
     && touch /var/run/xl2tpd/l2tp-control
 
