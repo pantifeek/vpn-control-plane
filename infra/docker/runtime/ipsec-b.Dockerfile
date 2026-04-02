@@ -1,24 +1,21 @@
-FROM alpine:3.18
+FROM node:22-bookworm-slim
 
 WORKDIR /app
 
-RUN apk add --no-cache \
-    openrc \
-    ca-certificates \
-    curl \
+RUN apt-get update && apt-get install -y \
+    strongswan \
+    strongswan-swanctl \
+    xl2tpd \
+    ppp \
+    kmod \
     iproute2 \
     iptables \
-    iputils \
-    kmod \
-    conntrack-tools \
+    iputils-ping \
+    conntrack \
     nftables \
-    ppp \
-    libreswan \
-    xl2tpd \
-    nodejs \
-    npm \
-    && mkdir -p /var/run/pluto \
-    && mkdir -p /run/pluto \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/run/xl2tpd \
     && touch /var/run/xl2tpd/l2tp-control
 
