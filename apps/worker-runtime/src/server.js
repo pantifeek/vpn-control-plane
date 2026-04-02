@@ -39,6 +39,7 @@ const IPSEC_XL2TPD_ORPHAN_TUNNEL_WINDOW_MS = readNumberEnv('RUNTIME_IPSEC_XL2TPD
 const IPSEC_XL2TPD_ORPHAN_RECOVERY_COOLDOWN_MS = readNumberEnv('RUNTIME_IPSEC_XL2TPD_ORPHAN_RECOVERY_COOLDOWN_MS', 60000);
 const IPSEC_XL2TPD_ORPHAN_RECOVERY_ENABLED = String(process.env.RUNTIME_IPSEC_XL2TPD_ORPHAN_RECOVERY_ENABLED || 'false').toLowerCase() === 'true';
 const IPSEC_XL2TPD_TIMEOUT_RECOVERY_ENABLED = String(process.env.RUNTIME_IPSEC_XL2TPD_TIMEOUT_RECOVERY_ENABLED || 'false').toLowerCase() === 'true';
+const IPSEC_IMPLEMENTATION_OVERRIDE = String(process.env.RUNTIME_IPSEC_IMPLEMENTATION || '').trim().toLowerCase();
 const IS_IPSEC_TYPE = VPN_TYPE === 'IPSEC' || VPN_TYPE === 'IPSEC.B';
 
 const app = express();
@@ -96,6 +97,7 @@ let openvpnRuntime = null;
 let xl2tpdProcess = null;
 let ipsecRuntime = null;
 let ipsecKeepaliveTimer = null;
+let ipsecImplementationCache = null;
 
 function detectOpenvpnInterfaceFromConfig(configText) {
   const lines = String(configText || '').split(/\r?\n/);
@@ -198,6 +200,85 @@ function registerDeleteVariant(command, addArgs) {
   const actionIndex = deleteArgs.findIndex((item) => item === '-A' || item === '-I');
   if (actionIndex >= 0) deleteArgs[actionIndex] = '-D';
   registerCleanup(command, deleteArgs);
+}
+
+function getIpsecImplementation() {
+  if (!IS_IPSEC_TYPE) return 'strongswan';
+  if (ipsecImplementationCache) return ipsecImplementationCache;
+
+  if (IPSEC_IMPLEMENTATION_OVERRIDE === 'libreswan' || IPSEC_IMPLEMENTATION_OVERRIDE === 'strongswan') {
+    ipsecImplementationCache = IPSEC_IMPLEMENTATION_OVERRIDE;
+    log(`IPsec implementation forced via env: ${ipsecImplementationCache}`);
+    return ipsecImplementationCache;
+  }
+
+  const probe = spawnSync('ipsec', ['--version'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  const text = `${probe.stdout || ''}\n${probe.stderr || ''}`.toLowerCase();
+  if (text.includes('libreswan')) {
+    ipsecImplementationCache = 'libreswan';
+  } else if (text.includes('strongswan')) {
+    ipsecImplementationCache = 'strongswan';
+  } else {
+    ipsecImplementationCache = 'strongswan';
+  }
+
+  log(`Detected IPsec implementation: ${ipsecImplementationCache}`);
+  return ipsecImplementationCache;
+}
+
+function runIpsecRestart() {
+  if (getIpsecImplementation() === 'libreswan') {
+    runSafe('ipsec', ['stop']);
+    runSafe('ipsec', ['initnss']);
+    run('ipsec', ['start']);
+    return;
+  }
+  run('ipsec', ['restart']);
+}
+
+function runIpsecStatusAll() {
+  if (getIpsecImplementation() === 'libreswan') {
+    return run('ipsec', ['status']);
+  }
+  return run('ipsec', ['statusall']);
+}
+
+function runIpsecRereadAll() {
+  if (getIpsecImplementation() === 'libreswan') {
+    runSafe('ipsec', ['auto', '--rereadall']);
+    return;
+  }
+  runSafe('ipsec', ['rereadall']);
+}
+
+function runIpsecUpConnection(connectionName) {
+  if (getIpsecImplementation() === 'libreswan') {
+    run('ipsec', ['auto', '--up', connectionName]);
+    return;
+  }
+  run('ipsec', ['up', connectionName]);
+}
+
+function checkIpsecConnectionStatus(connectionName) {
+  if (getIpsecImplementation() === 'libreswan') {
+    const result = spawnSync('ipsec', ['auto', '--status'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    if (result.status !== 0) {
+      return false;
+    }
+    if (!connectionName) {
+      return true;
+    }
+    const text = `${result.stdout || ''}\n${result.stderr || ''}`;
+    return text.includes(connectionName);
+  }
+
+  return commandSucceeds('ipsec', ['status', connectionName]);
 }
 
 function enableIpForwarding() {
@@ -936,7 +1017,7 @@ function isIpsecTransportHealthy() {
     return false;
   }
 
-  return commandSucceeds('ipsec', ['status', 'l2tp-psk']);
+  return checkIpsecConnectionStatus('l2tp-psk');
 }
 
 async function runIpsecKeepaliveTick() {
@@ -1392,7 +1473,7 @@ async function waitForIpsecStarter(timeoutMs = 15000) {
 
   while (Date.now() - startedAt < timeoutMs) {
     try {
-      run('ipsec', ['statusall']);
+      runIpsecStatusAll();
       return;
     } catch (error) {
       await sleep(1000);
@@ -1423,16 +1504,16 @@ async function configureIpsec() {
   ensurePppDevice();
   loadIpsecKernelModules();
 
-  run('ipsec', ['restart']);
+  runIpsecRestart();
   await waitForIpsecStarter(15000);
   await sleep(2000);
-  runSafe('ipsec', ['rereadall']);
+  runIpsecRereadAll();
 
   try {
-    run('ipsec', ['up', files.connectionName]);
+    runIpsecUpConnection(files.connectionName);
   } catch (error) {
     try {
-      run('ipsec', ['statusall']);
+      runIpsecStatusAll();
     } catch (statusError) {
       log(`ipsec statusall after failure: ${statusError.message}`);
     }
@@ -1599,11 +1680,9 @@ async function monitorIpsec() {
   state.ipsec.interfaceMissingSince = null;
   state.ipsec.activeInterface = iface;
 
-  try {
-    run('ipsec', ['status', 'l2tp-psk']);
-  } catch (error) {
+  if (!checkIpsecConnectionStatus('l2tp-psk')) {
     state.status = 'ERROR';
-    state.lastMessage = `IPsec status check failed: ${error.message}`;
+    state.lastMessage = `IPsec status check failed for l2tp-psk (${getIpsecImplementation()})`;
     await recoverTunnel('ipsec status check failed');
     return;
   }
