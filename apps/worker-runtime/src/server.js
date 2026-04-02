@@ -755,7 +755,8 @@ function buildOpenvpnConfigFiles() {
 
 function buildIpsecRuntimeFiles() {
   const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipsec-runtime-'));
-  const connectionName = 'l2tp-psk';
+  const ipsecImpl = getIpsecImplementation();
+  const connectionName = ipsecImpl === 'libreswan' ? 'L2TP-PSK' : 'l2tp-psk';
   const lacName = 'vpn-lac';
   const pppOptionsPath = '/etc/ppp/options.l2tpd.client';
   const chapSecretsPath = '/etc/ppp/chap-secrets';
@@ -782,32 +783,53 @@ function buildIpsecRuntimeFiles() {
   fs.mkdirSync('/etc/ppp', { recursive: true });
   fs.mkdirSync('/var/run/xl2tpd', { recursive: true });
 
-  const ipsecConf = [
-    'config setup',
-    '  uniqueids=no',
-    '',
-    `conn ${connectionName}`,
-    '  keyexchange=ikev1',
-    '  authby=secret',
-    '  type=transport',
-    '  ike=aes256-sha1-modp1024,aes128-sha1-modp1024,3des-sha1-modp1024!',
-    '  esp=aes256-sha1,aes128-sha1,3des-sha1!',
-    '  ikelifetime=8h',
-    '  keylife=1h',
-    '  rekeymargin=3m',
-    '  keyingtries=%forever',
-    '  dpddelay=30s',
-    '  dpdtimeout=120s',
-    '  dpdaction=restart',
-    '  left=%defaultroute',
-    `  leftid=${localIdentifier || '%any'}`,
-    '  leftprotoport=17/1701',
-    `  right=${serverHost}`,
-    `  rightid=${remoteIdentifier}`,
-    '  rightprotoport=17/1701',
-    '  auto=add',
-    ''
-  ].join('\n');
+  const ipsecConf = ipsecImpl === 'libreswan'
+    ? [
+      'config setup',
+      '',
+      `conn ${connectionName}`,
+      '  authby=secret',
+      '  pfs=no',
+      '  auto=add',
+      '  rekey=no',
+      '  keyingtries=%forever',
+      '  type=transport',
+      '  left=%defaultroute',
+      '  leftprotoport=17/1701',
+      `  right=${serverHost}`,
+      '  rightprotoport=17/1701',
+      '  dpddelay=15',
+      '  dpdtimeout=30',
+      '  dpdaction=clear',
+      '  ike=aes-sha1-modp1024',
+      ''
+    ].join('\n')
+    : [
+      'config setup',
+      '  uniqueids=no',
+      '',
+      `conn ${connectionName}`,
+      '  keyexchange=ikev1',
+      '  authby=secret',
+      '  type=transport',
+      '  ike=aes256-sha1-modp1024,aes128-sha1-modp1024,3des-sha1-modp1024!',
+      '  esp=aes256-sha1,aes128-sha1,3des-sha1!',
+      '  ikelifetime=8h',
+      '  keylife=1h',
+      '  rekeymargin=3m',
+      '  keyingtries=%forever',
+      '  dpddelay=30s',
+      '  dpdtimeout=120s',
+      '  dpdaction=restart',
+      '  left=%defaultroute',
+      `  leftid=${localIdentifier || '%any'}`,
+      '  leftprotoport=17/1701',
+      `  right=${serverHost}`,
+      `  rightid=${remoteIdentifier}`,
+      '  rightprotoport=17/1701',
+      '  auto=add',
+      ''
+    ].join('\n');
 
   const ipsecSecrets = `${localIdentifier || '%any'} ${remoteIdentifier} : PSK "${preSharedKey.replace(/"/g, '\\"')}"\n`;
 
@@ -1089,7 +1111,8 @@ function isIpsecTransportHealthy() {
     return false;
   }
 
-  return checkIpsecConnectionStatus('l2tp-psk');
+  const connName = ipsecRuntime?.connectionName || 'l2tp-psk';
+  return checkIpsecConnectionStatus(connName);
 }
 
 async function runIpsecKeepaliveTick() {
@@ -1761,9 +1784,10 @@ async function monitorIpsec() {
   state.ipsec.interfaceMissingSince = null;
   state.ipsec.activeInterface = iface;
 
-  if (!checkIpsecConnectionStatus('l2tp-psk')) {
+  const connName = ipsecRuntime?.connectionName || 'l2tp-psk';
+  if (!checkIpsecConnectionStatus(connName)) {
     state.status = 'ERROR';
-    state.lastMessage = `IPsec status check failed for l2tp-psk (${getIpsecImplementation()})`;
+    state.lastMessage = `IPsec status check failed for ${connName} (${getIpsecImplementation()})`;
     await recoverTunnel('ipsec status check failed');
     return;
   }
