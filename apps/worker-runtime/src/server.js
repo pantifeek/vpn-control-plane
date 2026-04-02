@@ -233,7 +233,26 @@ function runIpsecRestart() {
   if (getIpsecImplementation() === 'libreswan') {
     runSafe('ipsec', ['stop']);
     runSafe('ipsec', ['initnss']);
-    run('ipsec', ['start']);
+    log('run: ipsec start');
+    const startResult = spawnSync('ipsec', ['start'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    if (startResult.stdout?.trim()) log(`stdout: ${startResult.stdout.trim()}`);
+    if (startResult.stderr?.trim()) log(`stderr: ${startResult.stderr.trim()}`);
+
+    if (startResult.status !== 0) {
+      const details = `${startResult.stderr || ''} ${startResult.stdout || ''}`.toLowerCase();
+      const benign =
+        details.includes('already starting')
+        || details.includes('already started')
+        || details.includes('already running');
+      if (!benign) {
+        const output = [startResult.stderr?.trim(), startResult.stdout?.trim()].filter(Boolean).join(' | ');
+        throw new Error(`ipsec start failed with code ${startResult.status}${output ? `: ${output}` : ''}`);
+      }
+      log('ipsec start returned a benign non-zero status, continuing startup wait');
+    }
     return;
   }
   run('ipsec', ['restart']);
