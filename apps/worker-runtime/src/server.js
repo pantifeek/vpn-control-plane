@@ -283,6 +283,15 @@ function runIpsecRereadAll(connectionName = '') {
       log(`ipsec rereadall fallback to auto --rereadall due to: ${error.message}`);
       runSafe('ipsec', ['auto', '--rereadall']);
     }
+    if (connectionName) {
+      // libreswan does not always load conn stanzas on rereadall in this container,
+      // so try explicit add. Keep it best-effort to survive buggy addconn builds.
+      try {
+        run('ipsec', ['auto', '--add', connectionName]);
+      } catch (error) {
+        log(`ipsec auto --add warning: ${error.message}`);
+      }
+    }
     runSafe('ipsec', ['whack', '--listen']);
     return;
   }
@@ -746,7 +755,7 @@ function buildOpenvpnConfigFiles() {
 function buildIpsecRuntimeFiles() {
   const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipsec-runtime-'));
   const ipsecImpl = getIpsecImplementation();
-  const connectionName = ipsecImpl === 'libreswan' ? 'L2TP-PSK' : 'l2tp-psk';
+  const connectionName = 'l2tp-psk';
   const lacName = 'vpn-lac';
   const pppOptionsPath = '/etc/ppp/options.l2tpd.client';
   const chapSecretsPath = '/etc/ppp/chap-secrets';
@@ -786,10 +795,8 @@ function buildIpsecRuntimeFiles() {
       '  keyingtries=%forever',
       '  type=transport',
       '  left=%defaultroute',
-      `  leftid=${localIdentifier || '%any'}`,
       '  leftprotoport=17/1701',
       `  right=${serverHost}`,
-      `  rightid=${remoteIdentifier}`,
       '  rightprotoport=17/1701',
       '  dpddelay=15',
       '  dpdtimeout=30',
