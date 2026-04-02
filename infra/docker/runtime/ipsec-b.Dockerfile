@@ -3,6 +3,7 @@ FROM alpine:3.20
 WORKDIR /app
 
 RUN apk add --no-cache \
+    openrc \
     ca-certificates \
     curl \
     iproute2 \
