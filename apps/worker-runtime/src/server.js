@@ -277,20 +277,11 @@ function runIpsecStatusAll() {
 
 function runIpsecRereadAll(connectionName = '') {
   if (getIpsecImplementation() === 'libreswan') {
-    if (connectionName) {
-      try {
-        run('ipsec', ['add', connectionName]);
-      } catch (error) {
-        log(`ipsec add fallback to auto --add due to: ${error.message}`);
-        runSafe('ipsec', ['auto', '--add', connectionName]);
-      }
-    } else {
-      try {
-        run('ipsec', ['rereadall']);
-      } catch (error) {
-        log(`ipsec rereadall fallback to auto --rereadall due to: ${error.message}`);
-        runSafe('ipsec', ['auto', '--rereadall']);
-      }
+    try {
+      run('ipsec', ['rereadall']);
+    } catch (error) {
+      log(`ipsec rereadall fallback to auto --rereadall due to: ${error.message}`);
+      runSafe('ipsec', ['auto', '--rereadall']);
     }
     runSafe('ipsec', ['whack', '--listen']);
     return;
@@ -300,6 +291,7 @@ function runIpsecRereadAll(connectionName = '') {
 
 function runIpsecUpConnection(connectionName) {
   if (getIpsecImplementation() === 'libreswan') {
+    runSafe('ipsec', ['whack', '--listen']);
     try {
       run('ipsec', ['up', connectionName]);
     } catch (error) {
@@ -318,12 +310,10 @@ function runIpsecUpConnection(connectionName) {
         return;
       }
       if (msg.includes('no connection or alias named')) {
+        // On some libreswan builds, `ipsec add/auto --add` can crash.
+        // Prefer reloading configs and retrying `up` directly.
+        runSafe('ipsec', ['rereadall']);
         runSafe('ipsec', ['whack', '--listen']);
-        try {
-          run('ipsec', ['add', connectionName]);
-        } catch {
-          runSafe('ipsec', ['auto', '--add', connectionName]);
-        }
         run('ipsec', ['up', connectionName]);
         return;
       }
@@ -788,6 +778,7 @@ function buildIpsecRuntimeFiles() {
       'config setup',
       '',
       `conn ${connectionName}`,
+      '  ikev2=never',
       '  authby=secret',
       '  pfs=no',
       '  auto=add',
@@ -795,12 +786,13 @@ function buildIpsecRuntimeFiles() {
       '  keyingtries=%forever',
       '  type=transport',
       '  left=%defaultroute',
+      `  leftid=${localIdentifier || '%any'}`,
       '  leftprotoport=17/1701',
       `  right=${serverHost}`,
+      `  rightid=${remoteIdentifier}`,
       '  rightprotoport=17/1701',
       '  dpddelay=15',
       '  dpdtimeout=30',
-      '  dpdaction=clear',
       '  ike=aes-sha1-modp1024',
       ''
     ].join('\n')
