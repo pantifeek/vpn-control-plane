@@ -275,9 +275,14 @@ function runIpsecStatusAll() {
   return run('ipsec', ['statusall']);
 }
 
-function runIpsecRereadAll() {
+function runIpsecRereadAll(connectionName = '') {
   if (getIpsecImplementation() === 'libreswan') {
-    runSafe('ipsec', ['auto', '--rereadall']);
+    if (connectionName) {
+      runSafe('ipsec', ['auto', '--add', connectionName]);
+    } else {
+      runSafe('ipsec', ['auto', '--rereadall']);
+    }
+    runSafe('ipsec', ['whack', '--listen']);
     return;
   }
   runSafe('ipsec', ['rereadall']);
@@ -285,7 +290,17 @@ function runIpsecRereadAll() {
 
 function runIpsecUpConnection(connectionName) {
   if (getIpsecImplementation() === 'libreswan') {
-    run('ipsec', ['auto', '--up', connectionName]);
+    try {
+      run('ipsec', ['auto', '--up', connectionName]);
+    } catch (error) {
+      const msg = String(error.message || '').toLowerCase();
+      if (msg.includes('need --listen before --initiate')) {
+        runSafe('ipsec', ['whack', '--listen']);
+        run('ipsec', ['auto', '--up', connectionName]);
+        return;
+      }
+      throw error;
+    }
     return;
   }
   run('ipsec', ['up', connectionName]);
@@ -1545,7 +1560,7 @@ async function configureIpsec() {
   runIpsecRestart();
   await waitForIpsecStarter(15000);
   await sleep(2000);
-  runIpsecRereadAll();
+  runIpsecRereadAll(files.connectionName);
 
   try {
     runIpsecUpConnection(files.connectionName);
