@@ -296,12 +296,20 @@ function runIpsecUpConnection(connectionName) {
       run('ipsec', ['up', connectionName]);
     } catch (error) {
       const msg = String(error.message || '').toLowerCase();
+      if (msg.includes('unknown ipsec command "up"')) {
+        run('ipsec', ['auto', '--up', connectionName]);
+        return;
+      }
       if (msg.includes('need --listen before --initiate')) {
         runSafe('ipsec', ['whack', '--listen']);
         try {
           run('ipsec', ['up', connectionName]);
         } catch (retryError) {
           const retryMsg = String(retryError.message || '').toLowerCase();
+          if (retryMsg.includes('unknown ipsec command "up"')) {
+            run('ipsec', ['auto', '--up', connectionName]);
+            return;
+          }
           if (!retryMsg.includes('no connection or alias named')) {
             throw retryError;
           }
@@ -314,7 +322,16 @@ function runIpsecUpConnection(connectionName) {
         // Prefer reloading configs and retrying `up` directly.
         runSafe('ipsec', ['rereadall']);
         runSafe('ipsec', ['whack', '--listen']);
-        run('ipsec', ['up', connectionName]);
+        try {
+          run('ipsec', ['up', connectionName]);
+        } catch (retryUpError) {
+          const retryUpMsg = String(retryUpError.message || '').toLowerCase();
+          if (retryUpMsg.includes('unknown ipsec command "up"')) {
+            run('ipsec', ['auto', '--up', connectionName]);
+          } else {
+            throw retryUpError;
+          }
+        }
         return;
       }
       throw error;
@@ -793,7 +810,8 @@ function buildIpsecRuntimeFiles() {
       '  dpddelay=15',
       '  dpdtimeout=30',
       '  dpdaction=clear',
-      '  ike=aes-sha1-modp1024',
+      // libreswan 4.x (alpine 3.18) rejects modp1024 at conn load time.
+      '  ike=aes-sha1-modp1536,aes-sha1-modp2048,3des-sha1-modp1536',
       `  right=${serverHost}`,
       ''
     ].join('\n')
