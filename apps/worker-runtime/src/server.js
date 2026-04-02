@@ -98,6 +98,7 @@ let xl2tpdProcess = null;
 let ipsecRuntime = null;
 let ipsecKeepaliveTimer = null;
 let ipsecImplementationCache = null;
+let plutoProcess = null;
 
 function detectOpenvpnInterfaceFromConfig(configText) {
   const lines = String(configText || '').split(/\r?\n/);
@@ -236,26 +237,32 @@ function runIpsecRestart() {
     runSafe('sh', ['-lc', 'mkdir -p /run/pluto /var/run/pluto']);
     runSafe('sh', ['-lc', 'rm -f /run/pluto/pluto.pid /var/run/pluto/pluto.pid /run/pluto/pluto.ctl /var/run/pluto/pluto.ctl']);
 
-    log('run: ipsec pluto --stderrlog --config /etc/ipsec.conf');
-    const startResult = spawnSync('ipsec', ['pluto', '--stderrlog', '--config', '/etc/ipsec.conf'], {
-      encoding: 'utf8',
+    if (plutoProcess && !plutoProcess.killed) {
+      plutoProcess.kill('SIGTERM');
+      plutoProcess = null;
+    }
+
+    log('spawn: ipsec pluto --stderrlog --config /etc/ipsec.conf');
+    plutoProcess = spawn('ipsec', ['pluto', '--stderrlog', '--config', '/etc/ipsec.conf'], {
       stdio: ['ignore', 'pipe', 'pipe']
     });
-    if (startResult.stdout?.trim()) log(`stdout: ${startResult.stdout.trim()}`);
-    if (startResult.stderr?.trim()) log(`stderr: ${startResult.stderr.trim()}`);
-
-    if (startResult.status !== 0) {
-      const details = `${startResult.stderr || ''} ${startResult.stdout || ''}`.toLowerCase();
-      const benign =
-        details.includes('already starting')
-        || details.includes('already started')
-        || details.includes('already running');
-      if (!benign) {
-        const output = [startResult.stderr?.trim(), startResult.stdout?.trim()].filter(Boolean).join(' | ');
-        throw new Error(`ipsec pluto start failed with code ${startResult.status}${output ? `: ${output}` : ''}`);
+    plutoProcess.stdout.on('data', (chunk) => {
+      const text = String(chunk).trim();
+      if (text) log(`pluto stdout: ${text}`);
+    });
+    plutoProcess.stderr.on('data', (chunk) => {
+      const text = String(chunk).trim();
+      if (text) log(`pluto stderr: ${text}`);
+    });
+    plutoProcess.on('exit', (code, signal) => {
+      log(`pluto exited with code=${code} signal=${signal}`);
+      if (IS_IPSEC_TYPE && state.status !== 'STOPPED' && !recoverInProgress) {
+        state.status = 'ERROR';
+        state.lastMessage = `pluto exited unexpectedly (${code ?? signal})`;
       }
-      log('ipsec pluto returned a benign non-zero status, continuing startup wait');
-    }
+      plutoProcess = null;
+    });
+
     return;
   }
   run('ipsec', ['restart']);
@@ -1335,6 +1342,10 @@ function stopIpsecProcesses() {
   }
   xl2tpdProcess = null;
   if (getIpsecImplementation() === 'libreswan') {
+    if (plutoProcess && !plutoProcess.killed) {
+      plutoProcess.kill('SIGTERM');
+      plutoProcess = null;
+    }
     runSafe('ipsec', ['stop']);
     runSafe('sh', ['-lc', 'pkill -TERM -f pluto || true']);
   } else {
